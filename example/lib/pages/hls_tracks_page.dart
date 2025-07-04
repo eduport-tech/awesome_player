@@ -32,9 +32,7 @@ class _HlsTracksPageState extends State<HlsTracksPage> {
     _betterPlayerController = BetterPlayerController(betterPlayerConfiguration);
     _betterPlayerController.setupDataSource(dataSource);
     _betterPlayerController.addEventsListener((e){
-      if(e.betterPlayerEventType==BetterPlayerEventType.analytics){
-        log('EVENT----${e.betterPlayerEventType}==${e.parameters}');
-      }
+    
      
     });
     super.initState();
