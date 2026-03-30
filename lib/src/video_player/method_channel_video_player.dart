@@ -200,6 +200,16 @@ class MethodChannelVideoPlayer extends VideoPlayerPlatform {
   }
 
   @override
+  Future<void> seekToLive(int? textureId) {
+    return _channel.invokeMethod<void>(
+      'seekToLive',
+      <String, dynamic>{
+        'textureId': textureId,
+      },
+    );
+  }
+
+  @override
   Future<Duration> getPosition(int? textureId) async {
     return Duration(
         milliseconds: await _channel.invokeMethod<int>(

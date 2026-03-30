@@ -56,6 +56,12 @@ class Constants {
       "https://eng-demo.cablecast.tv/segmented-captions/vod.m3u8";
 
 
-  static String fmp4 = 'https://assets-dev.eduport.app/live/59bedadd-554d-400d-959b-d81b8d4dfa5e/index.m3u8';
-  static String fmp4_2 = 'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.mp4/.m3u8';
+  static String fmp4_2 = 'https://assets-dev.eduport.app/live/a2dc89b8-3acb-43ad-b557-7fa8fad7e66d/index.m3u8';
+  static String fmp4 = 'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.mp4/.m3u8';
+  static String cbs = 'https://dai.google.com/linear/hls/pb/event/Sid4xiTQTkCT1SLu6rjUSQ/stream/69c70a25-da0d-4479-ae61-1f68dfecb2da:TPE/variant/fd3bc9281fe3be69ef75fdb9b60d78a4/bandwidth/5980000.m3u8';
+
+  static String live3 = 'https://assets-dev.eduport.app/live/4e31e533-f2b7-4b12-9b00-c48d876529b8/index.m3u8';
 }
+//https://www.cbsnews.com/live/
+//https://www.aajtak.in/
+//https://feeds.intoday.in/aajtak/api/master.m3u8

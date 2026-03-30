@@ -127,6 +127,11 @@ abstract class VideoPlayerPlatform {
     throw UnimplementedError('seekTo() has not been implemented.');
   }
 
+  /// Seek to the live edge
+  Future<void> seekToLive(int? textureId) {
+    throw UnimplementedError('seekToLive() has not been implemented.');
+  }
+
   /// Gets the video position as [Duration] from the start.
   Future<Duration> getPosition(int? textureId) {
     throw UnimplementedError('getPosition() has not been implemented.');

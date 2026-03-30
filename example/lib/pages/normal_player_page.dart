@@ -11,6 +11,7 @@ class NormalPlayerPage extends StatefulWidget {
 class _NormalPlayerPageState extends State<NormalPlayerPage> {
   late BetterPlayerController _betterPlayerController;
   late BetterPlayerDataSource _betterPlayerDataSource;
+  bool _isBehindLiveEdge = false;
 
   @override
   void initState() {
@@ -18,6 +19,9 @@ class _NormalPlayerPageState extends State<NormalPlayerPage> {
         BetterPlayerConfiguration(
       aspectRatio: 16 / 9,
       allowedScreenSleep: false,
+      controlsConfiguration: BetterPlayerControlsConfiguration(
+        playerTheme: BetterPlayerTheme.cupertino,
+      ),
       fit: BoxFit.contain,
       autoPlay: true,
       looping: true,
@@ -27,10 +31,24 @@ class _NormalPlayerPageState extends State<NormalPlayerPage> {
       ],
     );
     _betterPlayerDataSource = BetterPlayerDataSource(
-      BetterPlayerDataSourceType.network,
-      Constants.fmp4_2,
+        BetterPlayerDataSourceType.network,
+        // liveStream: true,
+        Constants.live3,
+        videoFormat: BetterPlayerVideoFormat.hls,
+        bufferingConfiguration: BetterPlayerBufferingConfiguration());
+    _betterPlayerController = BetterPlayerController(
+      betterPlayerConfiguration,
     );
-    _betterPlayerController = BetterPlayerController(betterPlayerConfiguration);
+
+    _betterPlayerController.isBehindLiveEdgeController
+        .listen((isBehindLiveEdge) {
+      if (mounted && _isBehindLiveEdge != isBehindLiveEdge) {
+        setState(() {
+          _isBehindLiveEdge = isBehindLiveEdge;
+        });
+      }
+    });
+
     _betterPlayerController.setupDataSource(_betterPlayerDataSource);
     super.initState();
   }
@@ -39,7 +57,18 @@ class _NormalPlayerPageState extends State<NormalPlayerPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Normal player page"),
+        title: Text("Normal player"),
+        actions: [
+          if (_isBehindLiveEdge)
+            TextButton.icon(
+              icon: Icon(Icons.fast_forward, color: Colors.black),
+              label: Text("Go to Live", style: TextStyle(color: Colors.black)),
+              onPressed: () async {
+                await _betterPlayerController.seekToLive();
+                _betterPlayerController.play();
+              },
+            ),
+        ],
       ),
       body: Column(
         children: [

@@ -167,6 +167,9 @@ class BetterPlayerControlsConfiguration {
   ///Color of text in bottom modal sheet used for overflow menu items.
   final Color overflowModalTextColor;
 
+  ///Flag used to enable live DVR. If enabled, progress bar and skip buttons will be shown for live streams.
+  final bool enableLiveDvr;
+
 
   
 
@@ -223,6 +226,7 @@ class BetterPlayerControlsConfiguration {
     this.backgroundColor = Colors.black,
     this.overflowModalColor = Colors.white,
     this.overflowModalTextColor = Colors.black,
+    this.enableLiveDvr = false,
   });
 
   factory BetterPlayerControlsConfiguration.white() {

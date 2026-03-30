@@ -566,6 +566,13 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     }
   }
 
+  Future<void> seekToLive() async {
+    if (_isDisposed) {
+      return;
+    }
+    await _videoPlayerPlatform.seekToLive(_textureId);
+  }
+
   /// Sets the audio volume of [this].
   ///
   /// [volume] indicates a value between 0.0 (silent) and 1.0 (full volume) on a

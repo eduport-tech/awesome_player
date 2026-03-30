@@ -180,7 +180,8 @@ class _BetterPlayerCupertinoControlsState
             decoration: BoxDecoration(
               color: backgroundColor,
             ),
-            child: _betterPlayerController!.isLiveStream()
+            child: _betterPlayerController!.isLiveStream() &&
+                    !_controlsConfiguration.enableLiveDvr
                 ? Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: <Widget>[

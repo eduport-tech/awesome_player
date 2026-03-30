@@ -64,6 +64,10 @@ AVPictureInPictureController *_pipController;
                                                  selector:@selector(itemDidPlayToEndTime:)
                                                      name:AVPlayerItemDidPlayToEndTimeNotification
                                                    object:item];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(itemNewAccessLogEntry:)
+                                                     name:AVPlayerItemNewAccessLogEntryNotification
+                                                   object:item];
         self._observersAdded = true;
     }
 }
@@ -119,6 +123,14 @@ AVPictureInPictureController *_pipController;
             [ self removeObservers];
 
         }
+    }
+}
+
+- (void)itemNewAccessLogEntry:(NSNotification*)notification {
+    AVPlayerItem *item = (AVPlayerItem *)notification.object;
+    AVPlayerItemAccessLogEvent *lastEvent = item.accessLog.events.lastObject;
+    if (lastEvent && lastEvent.URI) {
+        NSLog(@"HLS chunk downloaded: %@", lastEvent.URI);
     }
 }
 
@@ -516,6 +528,24 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     }
 
     return [BetterPlayerTimeUtils FLTCMTimeToMillis:(time)];
+}
+
+- (void)seekToLive {
+    AVPlayerItem *currentItem = _player.currentItem;
+    if (currentItem && currentItem.seekableTimeRanges.count > 0) {
+        CMTimeRange seekableRange = [currentItem.seekableTimeRanges.lastObject CMTimeRangeValue];
+        CMTime liveEdge = CMTimeAdd(seekableRange.start, seekableRange.duration);
+        
+        bool wasPlaying = _isPlaying;
+        [_player seekToTime:liveEdge
+            toleranceBefore:kCMTimeZero
+             toleranceAfter:kCMTimeZero
+          completionHandler:^(BOOL finished){
+            if (finished && wasPlaying){
+                 [_player play];
+            }
+        }];
+    }
 }
 
 - (void)seekTo:(int)location {

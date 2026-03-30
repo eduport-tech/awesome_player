@@ -446,6 +446,7 @@ internal class BetterPlayer(
             }.createMediaSource(mediaItem)
 
             C.CONTENT_TYPE_HLS -> HlsMediaSource.Factory(mediaDataSourceFactory)
+                .setAllowChunklessPreparation(false)
                 .apply {
                     if (drmSessionManagerProvider != null) {
                         setDrmSessionManagerProvider(drmSessionManagerProvider!!)
@@ -518,11 +519,27 @@ internal class BetterPlayer(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                eventSink.error("VideoError", "${error.errorCodeName}", "")
+                if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                    Log.d("ExoPlayer ERROR_CODE_BEHIND_LIVE_WINDOW ", "d")
+                    exoPlayer?.seekToDefaultPosition()
+                    exoPlayer?.prepare()
+                } else {
+                    eventSink.error("VideoError", "${error.errorCodeName}", "")
+                }
             }
         })
 
         exoPlayer?.addAnalyticsListener(EventLogger())
+        exoPlayer?.addAnalyticsListener(object : AnalyticsListener {
+            override fun onLoadCompleted(
+                eventTime: AnalyticsListener.EventTime,
+                loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
+                mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData
+            ) {
+                Log.d("BetterPlayer", "HLS chunk downloaded: " + loadEventInfo.uri)
+                super.onLoadCompleted(eventTime, loadEventInfo, mediaLoadData)
+            }
+        })
         
         val reply: MutableMap<String, Any> = HashMap()
         reply["textureId"] = textureEntry.id()
@@ -592,6 +609,12 @@ internal class BetterPlayer(
             parametersBuilder.setMaxVideoBitrate(Int.MAX_VALUE)
         }
         trackSelector.setParameters(parametersBuilder)
+    }
+
+    fun seekToLive() {
+        if (exoPlayer?.isCurrentMediaItemLive == true) {
+            exoPlayer?.seekToDefaultPosition()
+        }
     }
 
     fun seekTo(location: Int) {

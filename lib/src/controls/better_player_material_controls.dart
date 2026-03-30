@@ -311,7 +311,8 @@ class _BetterPlayerMaterialControlsState
                     _buildPlayPause(_controller!)
                   else
                     const SizedBox(),
-                  if (_betterPlayerController!.isLiveStream())
+                  if (_betterPlayerController!.isLiveStream() &&
+                      !_controlsConfiguration.enableLiveDvr)
                     _buildLiveWidget()
                   else
                     _controlsConfiguration.enableProgressText
@@ -329,7 +330,8 @@ class _BetterPlayerMaterialControlsState
                 ],
               ),
             ),
-            if (_betterPlayerController!.isLiveStream())
+            if (_betterPlayerController!.isLiveStream() &&
+                !_controlsConfiguration.enableLiveDvr)
               const SizedBox()
             else
               _controlsConfiguration.enableProgressBar
@@ -403,7 +405,8 @@ class _BetterPlayerMaterialControlsState
       color: _controlsConfiguration.controlBarColor,
       width: double.infinity,
       height: double.infinity,
-      child: _betterPlayerController?.isLiveStream() == true
+      child: _betterPlayerController?.isLiveStream() == true &&
+              !_controlsConfiguration.enableLiveDvr
           ? const SizedBox()
           : Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,

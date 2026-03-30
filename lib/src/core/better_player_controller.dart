@@ -21,7 +21,7 @@ class BetterPlayerController {
   static const String _speedParameter = "speed";
   static const String _dataSourceParameter = "dataSource";
   static const String _authorizationHeader = "Authorization";
-    static const String _analyticsParameter = "Analitics";
+  static const String _analyticsParameter = "Analitics";
 
   ///General configuration used in controller instance.
   final BetterPlayerConfiguration betterPlayerConfiguration;
@@ -211,6 +211,21 @@ class BetterPlayerController {
   ///Currently displayed [BetterPlayerSubtitle].
   BetterPlayerSubtitle? renderedSubtitle;
 
+  bool _isLive = false;
+
+  final StreamController<bool> _isLiveStreamController =
+      StreamController.broadcast();
+
+  Stream<bool> get isLiveStreamController => _isLiveStreamController.stream;
+
+  bool _isBehindLiveEdge = false;
+
+  final StreamController<bool> _isBehindLiveEdgeController =
+      StreamController.broadcast();
+
+  Stream<bool> get isBehindLiveEdgeController =>
+      _isBehindLiveEdgeController.stream;
+
   BetterPlayerController(
     this.betterPlayerConfiguration, {
     this.betterPlayerPlaylistConfiguration,
@@ -306,6 +321,9 @@ class BetterPlayerController {
       _getHeaders(),
     );
     if (data != null) {
+      _isLive = !data.contains("EXT-X-ENDLIST");
+      _isLiveStreamController.add(_isLive);
+
       final BetterPlayerAsmsDataHolder _response =
           await BetterPlayerAsmsUtils.parse(data, betterPlayerDataSource!.url);
 
@@ -640,6 +658,14 @@ class BetterPlayerController {
     _postEvent(BetterPlayerEvent(BetterPlayerEventType.pause));
   }
 
+  ///Move player to the live edge of the stream.
+  Future<void> seekToLive() async {
+    if (videoPlayerController == null) {
+      throw StateError("The data source has not been initialized");
+    }
+    await videoPlayerController!.seekToLive();
+  }
+
   ///Move player to specific position/moment of the video.
   Future<void> seekTo(Duration moment) async {
     if (videoPlayerController == null) {
@@ -807,6 +833,19 @@ class BetterPlayerController {
         ),
       );
     }
+
+    if (_betterPlayerDataSource != null &&
+        isLiveStream() &&
+        currentVideoPlayerValue.duration != null) {
+      final int durationMs = currentVideoPlayerValue.duration!.inMilliseconds;
+      final int positionMs = currentVideoPlayerValue.position.inMilliseconds;
+      // Consider behind live edge if we are more than 15 seconds away from the end of the seekable window
+      final bool behindLiveEdge = (durationMs - positionMs) > 15000;
+      if (_isBehindLiveEdge != behindLiveEdge) {
+        _isBehindLiveEdge = behindLiveEdge;
+        _isBehindLiveEdgeController.add(behindLiveEdge);
+      }
+    }
   }
 
   ///Add event listener which listens to player events.
@@ -826,7 +865,7 @@ class BetterPlayerController {
       BetterPlayerUtils.log("The data source has not been initialized");
       throw StateError("The data source has not been initialized");
     }
-    return _betterPlayerDataSource!.liveStream == true;
+    return _betterPlayerDataSource!.liveStream == true || _isLive;
   }
 
   ///Flag which determines whenever player data source has been initialized.
@@ -1163,9 +1202,9 @@ class BetterPlayerController {
         break;
       case VideoEventType.analytics:
         _postEvent(BetterPlayerEvent(BetterPlayerEventType.analytics,
-        parameters: <String, dynamic>{
+            parameters: <String, dynamic>{
               _analyticsParameter: event.analytics,
-            } ));
+            }));
       default:
 
         ///TODO: Handle when needed
@@ -1299,6 +1338,8 @@ class BetterPlayerController {
       _nextVideoTimeStreamController.close();
       _controlsVisibilityStreamController.close();
       _videoEventStreamSubscription?.cancel();
+      _isLiveStreamController.close();
+      _isBehindLiveEdgeController.close();
       _disposed = true;
       _controllerEventStreamController.close();
 
