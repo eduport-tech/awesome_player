@@ -106,9 +106,12 @@ internal class BetterPlayer(
     private val customDefaultLoadControl: CustomDefaultLoadControl =
         customDefaultLoadControl ?: CustomDefaultLoadControl()
     private var lastSendBufferedPosition = 0L
+    private var wasLiveStream = false
 
     init {
         renderersFactory.setEnableDecoderFallback(true)
+        renderersFactory.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+        renderersFactory.forceEnableMediaCodecAsynchronousQueueing()
         val loadBuilder = DefaultLoadControl.Builder()
         loadBuilder.setBufferDurationsMs(
             this.customDefaultLoadControl.minBufferMs,
@@ -500,16 +503,30 @@ internal class BetterPlayer(
                             isInitialized = true
                             sendInitialized()
                         }
+                        // Track live status using the player's own authoritative flag
+                        if (exoPlayer?.isCurrentMediaItemLive == true) {
+                            wasLiveStream = true
+                        }
                         val event: MutableMap<String, Any> = HashMap()
                         event["event"] = "bufferingEnd"
                         eventSink.success(event)
                     }
 
                     Player.STATE_ENDED -> {
-                        val event: MutableMap<String, Any?> = HashMap()
-                        event["event"] = "completed"
-                        event["key"] = key
-                        eventSink.success(event)
+                        if (wasLiveStream) {
+                            // Live stream reached its end (EXT-X-ENDLIST fully consumed)
+                            wasLiveStream = false
+                            Log.d("BetterPlayer", "Live stream ended: STATE_ENDED on live stream")
+                            val liveEndEvent: MutableMap<String, Any?> = HashMap()
+                            liveEndEvent["event"] = "liveStreamEnded"
+                            liveEndEvent["key"] = key
+                            eventSink.success(liveEndEvent)
+                        } else {
+                            val event: MutableMap<String, Any?> = HashMap()
+                            event["event"] = "completed"
+                            event["key"] = key
+                            eventSink.success(event)
+                        }
                     }
 
                     Player.STATE_IDLE -> {
@@ -525,6 +542,26 @@ internal class BetterPlayer(
                     exoPlayer?.prepare()
                 } else {
                     eventSink.error("VideoError", "${error.errorCodeName}", "")
+                }
+            }
+
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                val player = exoPlayer ?: return
+                // Track whether the stream started as live
+                if (!timeline.isEmpty) {
+                    val window = Timeline.Window()
+                    timeline.getWindow(0, window)
+                    if (window.isLive()) {
+                        wasLiveStream = true
+                    } else if (wasLiveStream) {
+                        // The stream was live but is no longer — EXT-X-ENDLIST was received
+                        wasLiveStream = false
+                        Log.d("BetterPlayer", "Live stream ended: EXT-X-ENDLIST detected")
+                        val event: MutableMap<String, Any?> = HashMap()
+                        event["event"] = "liveStreamEnded"
+                        event["key"] = key
+                        eventSink.success(event)
+                    }
                 }
             }
         })

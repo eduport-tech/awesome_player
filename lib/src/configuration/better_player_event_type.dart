@@ -25,5 +25,7 @@ enum BetterPlayerEventType {
   bufferingUpdate,
   bufferingEnd,
   changedPlaylistItem,
-  analytics
+  analytics,
+  /// Emitted when an HLS live stream receives EXT-X-ENDLIST (stream has ended).
+  liveStreamEnded,
 }

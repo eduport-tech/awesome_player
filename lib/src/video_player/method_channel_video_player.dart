@@ -424,6 +424,12 @@ class MethodChannelVideoPlayer extends VideoPlayerPlatform {
             key: key,
           );
 
+        case 'liveStreamEnded':
+          return VideoEvent(
+            eventType: VideoEventType.liveStreamEnded,
+            key: key,
+          );
+
         default:
           return VideoEvent(
             eventType: VideoEventType.unknown,

@@ -477,8 +477,10 @@ enum VideoEventType {
   unknown,
 
   // analytics event
+  analytics,
 
-  analytics
+  /// The live stream has ended (EXT-X-ENDLIST detected in HLS manifest).
+  liveStreamEnded,
 }
 
 /// Describes a discrete segment of time within a video using a [start] and

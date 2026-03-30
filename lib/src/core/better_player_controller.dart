@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:developer';
 import 'dart:io';
 import 'package:awesome_video_player/awesome_video_player.dart';
 import 'package:awesome_video_player/src/configuration/better_player_controller_event.dart';
 import 'package:awesome_video_player/src/core/better_player_utils.dart';
+import 'package:awesome_video_player/src/hls/hls_parser/hls_master_playlist.dart';
+import 'package:awesome_video_player/src/hls/hls_parser/hls_playlist_parser.dart';
 import 'package:awesome_video_player/src/subtitles/better_player_subtitle.dart';
 import 'package:awesome_video_player/src/subtitles/better_player_subtitles_factory.dart';
 import 'package:awesome_video_player/src/video_player/video_player.dart';
@@ -321,7 +324,36 @@ class BetterPlayerController {
       _getHeaders(),
     );
     if (data != null) {
-      _isLive = !data.contains("EXT-X-ENDLIST");
+      // EXT-X-ENDLIST appears in variant media playlists, not in the master playlist.
+      // First check the master playlist itself (covers cases where URL is already a media playlist).
+      bool hasEndList = data.contains("EXT-X-ENDLIST");
+
+      // If no ENDLIST yet, parse the master playlist and check one of the variant media playlists.
+      if (!hasEndList) {
+        try {
+          final parsedPlaylist = await HlsPlaylistParser.create()
+              .parseString(Uri.parse(betterPlayerDataSource!.url), data);
+          if (parsedPlaylist is HlsMasterPlaylist &&
+              parsedPlaylist.mediaPlaylistUrls.isNotEmpty) {
+            final variantUrl =
+                parsedPlaylist.mediaPlaylistUrls.first?.toString();
+            if (variantUrl != null) {
+              final variantData = await BetterPlayerAsmsUtils.getDataFromUrl(
+                variantUrl,
+                _getHeaders(),
+              );
+              if (variantData != null) {
+                hasEndList = variantData.contains("EXT-X-ENDLIST");
+              }
+            }
+          }
+        } catch (e) {
+          BetterPlayerUtils.log(
+              "Failed to parse master playlist for live check: $e");
+        }
+      }
+
+      _isLive = !hasEndList;
       _isLiveStreamController.add(_isLive);
 
       final BetterPlayerAsmsDataHolder _response =
@@ -1205,6 +1237,13 @@ class BetterPlayerController {
             parameters: <String, dynamic>{
               _analyticsParameter: event.analytics,
             }));
+        break;
+      case VideoEventType.liveStreamEnded:
+        _isLive = false;
+        log("Live stream ended");
+        _isLiveStreamController.add(false);
+        _postEvent(BetterPlayerEvent(BetterPlayerEventType.liveStreamEnded));
+        break;
       default:
 
         ///TODO: Handle when needed

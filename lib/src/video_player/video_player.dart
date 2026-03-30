@@ -261,7 +261,11 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
         case VideoEventType.analytics:
           value = value.copyWith(analytics: event.analytics);
           break;
-        
+
+        case VideoEventType.liveStreamEnded:
+          // Forwarded to listeners via videoEventStreamController — no local state needed.
+          break;
+
         case VideoEventType.unknown:
           break;
       }

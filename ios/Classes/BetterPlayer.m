@@ -33,6 +33,7 @@ AVPictureInPictureController *_pipController;
         _player.automaticallyWaitsToMinimizeStalling = false;
     }
     self._observersAdded = false;
+    self.wasLiveStream = false;
     return self;
 }
 
@@ -48,6 +49,11 @@ AVPictureInPictureController *_pipController;
         [item addObserver:self forKeyPath:@"loadedTimeRanges" options:0 context:timeRangeContext];
         [item addObserver:self forKeyPath:@"status" options:0 context:statusContext];
         [item addObserver:self forKeyPath:@"presentationSize" options:0 context:presentationSizeContext];
+        // Observe duration to detect live→VOD transition (EXT-X-ENDLIST received)
+        [item addObserver:self
+               forKeyPath:@"duration"
+                  options:NSKeyValueObservingOptionNew
+                  context:nil];
         [item addObserver:self
                forKeyPath:@"playbackLikelyToKeepUp"
                   options:0
@@ -100,6 +106,9 @@ AVPictureInPictureController *_pipController;
                                    forKeyPath:@"loadedTimeRanges"
                                       context:timeRangeContext];
         [[_player currentItem] removeObserver:self
+                                   forKeyPath:@"duration"
+                                      context:nil];
+        [[_player currentItem] removeObserver:self
                                    forKeyPath:@"playbackLikelyToKeepUp"
                                       context:playbackLikelyToKeepUpContext];
         [[_player currentItem] removeObserver:self
@@ -119,9 +128,15 @@ AVPictureInPictureController *_pipController;
         [p seekToTime:kCMTimeZero completionHandler:nil];
     } else {
         if (_eventSink) {
-            _eventSink(@{@"event" : @"completed", @"key" : _key});
-            [ self removeObservers];
-
+            if (self.wasLiveStream) {
+                // Live stream played to end — EXT-X-ENDLIST was fully consumed
+                self.wasLiveStream = false;
+                NSLog(@"BetterPlayer iOS: Live stream ended (itemDidPlayToEndTime)");
+                _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
+            } else {
+                _eventSink(@{@"event" : @"completed", @"key" : _key});
+            }
+            [self removeObservers];
         }
     }
 }
@@ -422,6 +437,20 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
         if (_eventSink != nil) {
             _eventSink(@{@"event" : @"bufferingEnd", @"key" : _key});
         }
+    } else if ([path isEqualToString:@"duration"]) {
+        // Detect live→VOD transition: duration changes from kCMTimeIndefinite to finite
+        CMTime currentDuration = _player.currentItem.duration;
+        if (CMTIME_IS_INDEFINITE(currentDuration)) {
+            // Stream is live — mark it
+            self.wasLiveStream = true;
+        } else if (self.wasLiveStream && CMTIME_IS_NUMERIC(currentDuration) && CMTimeGetSeconds(currentDuration) > 0) {
+            // Was live, now has a real duration — EXT-X-ENDLIST was received
+            self.wasLiveStream = false;
+            NSLog(@"BetterPlayer iOS: Live stream ended (duration KVO transition)");
+            if (_eventSink != nil) {
+                _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
+            }
+        }
     }
 }
 
@@ -471,6 +500,18 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
         // The player may be initialized but still needs to determine the duration.
         if (isLive == false && [self duration] == 0) {
             return;
+        }
+
+        // Track live stream state
+        if (isLive) {
+            self.wasLiveStream = true;
+        } else if (self.wasLiveStream && _isInitialized) {
+            // Was live, now has a finite duration — EXT-X-ENDLIST received
+            self.wasLiveStream = false;
+            NSLog(@"BetterPlayer iOS: Live stream ended (EXT-X-ENDLIST detected)");
+            if (_eventSink) {
+                _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
+            }
         }
 
         //Fix from https://github.com/flutter/flutter/issues/66413
