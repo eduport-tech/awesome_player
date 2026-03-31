@@ -109,6 +109,92 @@ internal class BetterPlayer(
     private var lastSendBufferedPosition = 0L
     private var wasLiveStream = false
 
+    // ── Retry mechanism ──────────────────────────────────────────────────────
+    private var retryCount = 0
+    private val retryHandler = Handler(Looper.getMainLooper())
+    private var retryRunnable: Runnable? = null
+    private var lastDataSource: String? = null          // saved so prepare can re-use it
+    private var lastFormatHint: String? = null
+    private var lastHeaders: Map<String, String>? = null
+    private var lastCacheKey: String? = null
+    private var lastContext: Context? = null
+    companion object {
+        private const val MAX_RETRY_COUNT = 3
+        private const val TAG = "BetterPlayer"
+        private const val FORMAT_SS = "ss"
+        private const val FORMAT_DASH = "dash"
+        private const val FORMAT_HLS = "hls"
+        private const val FORMAT_OTHER = "other"
+        private const val DEFAULT_NOTIFICATION_CHANNEL = "BETTER_PLAYER_NOTIFICATION"
+        private const val NOTIFICATION_ID = 20772077
+
+        //Clear cache without accessing BetterPlayerCache.
+        fun clearCache(context: Context?, result: MethodChannel.Result) {
+            try {
+                context?.let {
+                    val file = File(it.cacheDir, "betterPlayerCache")
+                    deleteDirectory(file)
+                }
+                result.success(null)
+            } catch (exception: Exception) {
+                Log.e(TAG, exception.toString())
+                result.error("", "", "")
+            }
+        }
+
+        private fun deleteDirectory(file: File) {
+            if (file.isDirectory) {
+                val entries = file.listFiles()
+                if (entries != null) {
+                    for (entry in entries) {
+                        deleteDirectory(entry)
+                    }
+                }
+            }
+            if (!file.delete()) {
+                Log.e(TAG, "Failed to delete cache dir.")
+            }
+        }
+
+        //Start pre cache of video. Invoke work manager job and start caching in background.
+        fun preCache(
+            context: Context?, dataSource: String?, preCacheSize: Long,
+            maxCacheSize: Long, maxCacheFileSize: Long, headers: Map<String, String?>,
+            cacheKey: String?, result: MethodChannel.Result
+        ) {
+            val dataBuilder = Data.Builder()
+                .putString(BetterPlayerPlugin.URL_PARAMETER, dataSource)
+                .putLong(BetterPlayerPlugin.PRE_CACHE_SIZE_PARAMETER, preCacheSize)
+                .putLong(BetterPlayerPlugin.MAX_CACHE_SIZE_PARAMETER, maxCacheSize)
+                .putLong(BetterPlayerPlugin.MAX_CACHE_FILE_SIZE_PARAMETER, maxCacheFileSize)
+            if (cacheKey != null) {
+                dataBuilder.putString(BetterPlayerPlugin.CACHE_KEY_PARAMETER, cacheKey)
+            }
+            for (headerKey in headers.keys) {
+                dataBuilder.putString(
+                    BetterPlayerPlugin.HEADER_PARAMETER + headerKey,
+                    headers[headerKey]
+                )
+            }
+            if (dataSource != null && context != null) {
+                val cacheWorkRequest = OneTimeWorkRequest.Builder(CacheWorker::class.java)
+                    .addTag(dataSource)
+                    .setInputData(dataBuilder.build()).build()
+                WorkManager.getInstance(context).enqueue(cacheWorkRequest)
+            }
+            result.success(null)
+        }
+
+        //Stop pre cache of video with given url. If there's no work manager job for given url, then
+        //it will be ignored.
+        fun stopPreCache(context: Context?, url: String?, result: MethodChannel.Result) {
+            if (url != null && context != null) {
+                WorkManager.getInstance(context).cancelAllWorkByTag(url)
+            }
+            result.success(null)
+        }
+    }
+
     init {
         renderersFactory.setEnableDecoderFallback(true)
         renderersFactory.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
@@ -149,6 +235,14 @@ internal class BetterPlayer(
         cacheKey: String?,
         clearKey: String?
     ) {
+        // Save context & source info so the retry handler can re-prepare without parameters
+        lastContext = context
+        lastDataSource = dataSource
+        lastFormatHint = formatHint
+        lastHeaders = headers
+        lastCacheKey = cacheKey
+        retryCount = 0
+        cancelRetry()
 
         if(exoPlayer==null){
             eventSink.error("VideoError", "CONFIG_ERROR", "NO INSTANCE")
@@ -530,12 +624,38 @@ internal class BetterPlayer(
 
             override fun onPlayerError(error: PlaybackException) {
                 if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
-                    Log.d("ExoPlayer ERROR_CODE_BEHIND_LIVE_WINDOW ", "d")
+                    // Immediately recover from live-edge seek errors — no retry counter.
+                    Log.d(TAG, "Behind live window – seeking to default position and re-preparing")
                     exoPlayer?.seekToDefaultPosition()
                     exoPlayer?.prepare()
+                    return
+                }
+
+                if (retryCount < MAX_RETRY_COUNT) {
+                    retryCount++
+                    // Exponential backoff: 1 s, 2 s, 4 s …
+                    val delayMs = (1000L shl (retryCount - 1))
+                    Log.w(TAG, "ExoPlayer error [${error.errorCodeName}] – retry $retryCount/$MAX_RETRY_COUNT in ${delayMs}ms")
+                    retryRunnable = Runnable {
+                        if (exoPlayer == null) return@Runnable
+                        // Re-prepare with the saved context/source when available,
+                        // otherwise fall back to exoPlayer.prepare() on the current media item.
+                        val ctx = lastContext
+                        val src = lastDataSource
+                        if (ctx != null && src != null) {
+                            val uri = android.net.Uri.parse(src)
+                            val factory = DataSourceUtils.getDataSourceFactory(
+                                DataSourceUtils.getUserAgent(lastHeaders), lastHeaders
+                            )
+                            val ms = buildMediaSource(uri, factory, lastFormatHint, lastCacheKey, ctx)
+                            exoPlayer.setMediaSource(ms)
+                        }
+                        exoPlayer.prepare()
+                    }.also { retryHandler.postDelayed(it, delayMs) }
                 } else {
-                    // Show the normal error screen for all other errors.
-                    // Live end is detected exclusively via EXT-X-ENDLIST in onTimelineChanged.
+                    // All retries exhausted – propagate the error to Flutter.
+                    Log.e(TAG, "ExoPlayer error [${error.errorCodeName}] – all $MAX_RETRY_COUNT retries exhausted")
+                    cancelRetry()
                     eventSink.error("VideoError", "${error.errorCodeName}", "")
                 }
             }
@@ -827,7 +947,14 @@ internal class BetterPlayer(
         setAudioAttributes(exoPlayer, mixWithOthers)
     }
 
+    /** Cancel any pending retry scheduled via [retryHandler]. */
+    private fun cancelRetry() {
+        retryRunnable?.let { retryHandler.removeCallbacks(it) }
+        retryRunnable = null
+    }
+
     fun dispose() {
+        cancelRetry()
         disposeMediaSession()
         disposeRemoteNotifications()
         if (isInitialized) {
@@ -853,80 +980,7 @@ internal class BetterPlayer(
         return result
     }
 
-    companion object {
-        private const val TAG = "BetterPlayer"
-        private const val FORMAT_SS = "ss"
-        private const val FORMAT_DASH = "dash"
-        private const val FORMAT_HLS = "hls"
-        private const val FORMAT_OTHER = "other"
-        private const val DEFAULT_NOTIFICATION_CHANNEL = "BETTER_PLAYER_NOTIFICATION"
-        private const val NOTIFICATION_ID = 20772077
-
-        //Clear cache without accessing BetterPlayerCache.
-        fun clearCache(context: Context?, result: MethodChannel.Result) {
-            try {
-                context?.let {
-                    val file = File(it.cacheDir, "betterPlayerCache")
-                    deleteDirectory(file)
-                }
-                result.success(null)
-            } catch (exception: Exception) {
-                Log.e(TAG, exception.toString())
-                result.error("", "", "")
-            }
-        }
-
-        private fun deleteDirectory(file: File) {
-            if (file.isDirectory) {
-                val entries = file.listFiles()
-                if (entries != null) {
-                    for (entry in entries) {
-                        deleteDirectory(entry)
-                    }
-                }
-            }
-            if (!file.delete()) {
-                Log.e(TAG, "Failed to delete cache dir.")
-            }
-        }
-
-        //Start pre cache of video. Invoke work manager job and start caching in background.
-        fun preCache(
-            context: Context?, dataSource: String?, preCacheSize: Long,
-            maxCacheSize: Long, maxCacheFileSize: Long, headers: Map<String, String?>,
-            cacheKey: String?, result: MethodChannel.Result
-        ) {
-            val dataBuilder = Data.Builder()
-                .putString(BetterPlayerPlugin.URL_PARAMETER, dataSource)
-                .putLong(BetterPlayerPlugin.PRE_CACHE_SIZE_PARAMETER, preCacheSize)
-                .putLong(BetterPlayerPlugin.MAX_CACHE_SIZE_PARAMETER, maxCacheSize)
-                .putLong(BetterPlayerPlugin.MAX_CACHE_FILE_SIZE_PARAMETER, maxCacheFileSize)
-            if (cacheKey != null) {
-                dataBuilder.putString(BetterPlayerPlugin.CACHE_KEY_PARAMETER, cacheKey)
-            }
-            for (headerKey in headers.keys) {
-                dataBuilder.putString(
-                    BetterPlayerPlugin.HEADER_PARAMETER + headerKey,
-                    headers[headerKey]
-                )
-            }
-            if (dataSource != null && context != null) {
-                val cacheWorkRequest = OneTimeWorkRequest.Builder(CacheWorker::class.java)
-                    .addTag(dataSource)
-                    .setInputData(dataBuilder.build()).build()
-                WorkManager.getInstance(context).enqueue(cacheWorkRequest)
-            }
-            result.success(null)
-        }
-
-        //Stop pre cache of video with given url. If there's no work manager job for given url, then
-        //it will be ignored.
-        fun stopPreCache(context: Context?, url: String?, result: MethodChannel.Result) {
-            if (url != null && context != null) {
-                WorkManager.getInstance(context).cancelAllWorkByTag(url)
-            }
-            result.success(null)
-        }
-    }
+    // companion object is now defined earlier in the file (above the fields) to allow
+    // MAX_RETRY_COUNT to be referenced inside instance methods.
 
 }
