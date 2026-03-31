@@ -1,5 +1,3 @@
-import 'dart:developer';
-
 import 'package:awesome_video_player/awesome_video_player.dart';
 import 'package:awesome_video_player_example/constants.dart';
 import 'package:awesome_video_player_example/pages/custom_controls/hotstar_control.dart';
@@ -31,6 +29,7 @@ class _HlsTracksPageState extends State<HlsTracksPage> {
             AwsomePlayerControls(
           betterPlayerController: playerController,
           onControlsVisibilityChanged: onControlsVisibilityChanged,
+          onRetry: null,
         ),
       ),
       fit: BoxFit.contain,
