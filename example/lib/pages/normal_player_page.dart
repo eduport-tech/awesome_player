@@ -1,3 +1,5 @@
+import 'dart:developer';
+
 import 'package:awesome_video_player/awesome_video_player.dart';
 import 'package:awesome_video_player_example/constants.dart';
 import 'package:flutter/material.dart';
@@ -81,6 +83,9 @@ class _NormalPlayerPageState extends State<NormalPlayerPage>
         _fadeController.forward();
       }
     } 
+    else if(event.betterPlayerEventType == BetterPlayerEventType.exception){
+     log("errro ${event.parameters}");
+    }
   }
 
   void _watchAsStreamedLive() {

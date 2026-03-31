@@ -62,6 +62,7 @@ import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.HttpMediaDrmCallback
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.drm.UnsupportedDrmException
+import androidx.media3.exoplayer.hls.HlsManifest
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.smoothstreaming.DefaultSsChunkSource
 import androidx.media3.exoplayer.smoothstreaming.SsMediaSource
@@ -111,7 +112,10 @@ internal class BetterPlayer(
     init {
         renderersFactory.setEnableDecoderFallback(true)
         renderersFactory.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
-        renderersFactory.forceEnableMediaCodecAsynchronousQueueing()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            renderersFactory.experimentalSetMediaCodecAsyncCryptoFlagEnabled(false)
+        }
+        renderersFactory.experimentalSetMediaCodecAsyncCryptoFlagEnabled(false)
         val loadBuilder = DefaultLoadControl.Builder()
         loadBuilder.setBufferDurationsMs(
             this.customDefaultLoadControl.minBufferMs,
@@ -513,20 +517,10 @@ internal class BetterPlayer(
                     }
 
                     Player.STATE_ENDED -> {
-                        if (wasLiveStream) {
-                            // Live stream reached its end (EXT-X-ENDLIST fully consumed)
-                            wasLiveStream = false
-                            Log.d("BetterPlayer", "Live stream ended: STATE_ENDED on live stream")
-                            val liveEndEvent: MutableMap<String, Any?> = HashMap()
-                            liveEndEvent["event"] = "liveStreamEnded"
-                            liveEndEvent["key"] = key
-                            eventSink.success(liveEndEvent)
-                        } else {
-                            val event: MutableMap<String, Any?> = HashMap()
-                            event["event"] = "completed"
-                            event["key"] = key
-                            eventSink.success(event)
-                        }
+                        val event: MutableMap<String, Any?> = HashMap()
+                        event["event"] = "completed"
+                        event["key"] = key
+                        eventSink.success(event)
                     }
 
                     Player.STATE_IDLE -> {
@@ -541,27 +535,35 @@ internal class BetterPlayer(
                     exoPlayer?.seekToDefaultPosition()
                     exoPlayer?.prepare()
                 } else {
+                    // Show the normal error screen for all other errors.
+                    // Live end is detected exclusively via EXT-X-ENDLIST in onTimelineChanged.
                     eventSink.error("VideoError", "${error.errorCodeName}", "")
                 }
             }
 
             override fun onTimelineChanged(timeline: Timeline, reason: Int) {
                 val player = exoPlayer ?: return
-                // Track whether the stream started as live
+
+                // Step 1: track whether this stream started as live
                 if (!timeline.isEmpty) {
                     val window = Timeline.Window()
                     timeline.getWindow(0, window)
                     if (window.isLive()) {
                         wasLiveStream = true
-                    } else if (wasLiveStream) {
-                        // The stream was live but is no longer — EXT-X-ENDLIST was received
-                        wasLiveStream = false
-                        Log.d("BetterPlayer", "Live stream ended: EXT-X-ENDLIST detected")
-                        val event: MutableMap<String, Any?> = HashMap()
-                        event["event"] = "liveStreamEnded"
-                        event["key"] = key
-                        eventSink.success(event)
                     }
+                }
+
+                // Step 2: check #EXT-X-ENDLIST directly from the HLS manifest.
+                // hasEndTag is only true when the manifest actually contains EXT-X-ENDLIST,
+                // so errors (which don't update the manifest) never trigger this.
+                val manifest = player.currentManifest as? HlsManifest ?: return
+                if (wasLiveStream && manifest.mediaPlaylist.hasEndTag) {
+                    wasLiveStream = false
+                    Log.d("BetterPlayer", "Live stream ended: #EXT-X-ENDLIST found in HLS manifest")
+                    val event: MutableMap<String, Any?> = HashMap()
+                    event["event"] = "liveStreamEnded"
+                    event["key"] = key
+                    eventSink.success(event)
                 }
             }
         })
@@ -573,7 +575,7 @@ internal class BetterPlayer(
                 loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
                 mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData
             ) {
-                Log.d("BetterPlayer", "HLS chunk downloaded: " + loadEventInfo.uri)
+                Log.d("BetterPlayer###", "HLS chunk downloaded: " + loadEventInfo.uri)
                 super.onLoadCompleted(eventTime, loadEventInfo, mediaLoadData)
             }
         })

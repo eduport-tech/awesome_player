@@ -60,7 +60,7 @@ class Constants {
   static String fmp4 = 'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.mp4/.m3u8';
   static String cbs = 'https://dai.google.com/linear/hls/pb/event/Sid4xiTQTkCT1SLu6rjUSQ/stream/69c70a25-da0d-4479-ae61-1f68dfecb2da:TPE/variant/fd3bc9281fe3be69ef75fdb9b60d78a4/bandwidth/5980000.m3u8';
 
-  static String live3 = 'https://assets-dev.eduport.app/live/a510e926-c7d5-43ac-be4c-c9ed78263819/index.m3u8';
+  static String live3 = 'https://assets-dev.eduport.app/live/3b497979-6a7c-4895-938e-bf547ae1812d/index.m3u8';
 }
 
 //https://assets-dev.eduport.app/live/9b1a7bae-5a12-46fb-91d4-890a014908ed/index.m3u8
