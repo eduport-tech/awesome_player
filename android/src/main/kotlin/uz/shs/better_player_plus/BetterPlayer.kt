@@ -115,7 +115,6 @@ internal class BetterPlayer(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             renderersFactory.experimentalSetMediaCodecAsyncCryptoFlagEnabled(false)
         }
-        renderersFactory.experimentalSetMediaCodecAsyncCryptoFlagEnabled(false)
         val loadBuilder = DefaultLoadControl.Builder()
         loadBuilder.setBufferDurationsMs(
             this.customDefaultLoadControl.minBufferMs,

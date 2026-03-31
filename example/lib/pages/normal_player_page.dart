@@ -16,6 +16,7 @@ class _NormalPlayerPageState extends State<NormalPlayerPage>
   late BetterPlayerDataSource _betterPlayerDataSource;
   bool _isBehindLiveEdge = false;
   bool _liveStreamEnded = false;
+  final TextEditingController _urlController = TextEditingController();
 
   // Animation controller for the pulsing live-ended overlay
   late AnimationController _fadeController;
@@ -24,6 +25,7 @@ class _NormalPlayerPageState extends State<NormalPlayerPage>
   @override
   void initState() {
     super.initState();
+    _urlController.text = Constants.live3;
 
     _fadeController = AnimationController(
       vsync: this,
@@ -99,10 +101,26 @@ class _NormalPlayerPageState extends State<NormalPlayerPage>
     _betterPlayerController.play();
   }
 
+  void _playCustomUrl() {
+    final url = _urlController.text.trim();
+    if (url.isEmpty) return;
+    setState(() => _liveStreamEnded = false);
+    _fadeController.reset();
+    _betterPlayerDataSource = BetterPlayerDataSource(
+      BetterPlayerDataSourceType.network,
+      url,
+      videoFormat: BetterPlayerVideoFormat.hls,
+      bufferingConfiguration: BetterPlayerBufferingConfiguration(),
+    );
+    _betterPlayerController.setupDataSource(_betterPlayerDataSource);
+    _betterPlayerController.play();
+  }
+
   @override
   void dispose() {
     _betterPlayerController.removeEventsListener(_onPlayerEvent);
     _fadeController.dispose();
+    _urlController.dispose();
     super.dispose();
   }
 
@@ -224,6 +242,51 @@ class _NormalPlayerPageState extends State<NormalPlayerPage>
                       ),
                     ),
                   ),
+              ],
+            ),
+          ),
+
+          // HLS URL input
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _urlController,
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    decoration: InputDecoration(
+                      hintText: 'Enter HLS stream URL (.m3u8)',
+                      hintStyle: TextStyle(color: Colors.white38, fontSize: 13),
+                      prefixIcon: const Icon(Icons.link, color: Colors.white38, size: 18),
+                      filled: true,
+                      fillColor: Colors.white10,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    keyboardType: TextInputType.url,
+                    textInputAction: TextInputAction.go,
+                    onSubmitted: (_) => _playCustomUrl(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _playCustomUrl,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 18, vertical: 13),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Icon(Icons.play_arrow_rounded, size: 22),
+                ),
               ],
             ),
           ),
