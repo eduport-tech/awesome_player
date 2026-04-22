@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:awesome_video_player/src/configuration/better_player_controls_configuration.dart';
-import 'package:awesome_video_player/src/configuration/interctive_viewer.dart';
 import 'package:awesome_video_player/src/controls/better_player_clickable_widget.dart';
 import 'package:awesome_video_player/src/controls/better_player_controls_state.dart';
 import 'package:awesome_video_player/src/controls/better_player_material_progress_bar.dart';

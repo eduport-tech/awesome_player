@@ -118,6 +118,11 @@ internal class BetterPlayer(
     private var lastHeaders: Map<String, String>? = null
     private var lastCacheKey: String? = null
     private var lastContext: Context? = null
+    private var lastTargetOffsetMs: Long = -1L
+    private var lastMinOffsetMs: Long = -1L
+    private var lastMaxOffsetMs: Long = -1L
+    private var lastMinPlaybackSpeed: Float = -1.0f
+    private var lastMaxPlaybackSpeed: Float = -1.0f
     companion object {
         private const val MAX_RETRY_COUNT = 3
         private const val TAG = "BetterPlayer"
@@ -233,7 +238,12 @@ internal class BetterPlayer(
         licenseUrl: String?,
         drmHeaders: Map<String, String>?,
         cacheKey: String?,
-        clearKey: String?
+        clearKey: String?,
+        targetOffsetMs: Long,
+        minOffsetMs: Long,
+        maxOffsetMs: Long,
+        minPlaybackSpeed: Float,
+        maxPlaybackSpeed: Float
     ) {
         // Save context & source info so the retry handler can re-prepare without parameters
         lastContext = context
@@ -241,6 +251,11 @@ internal class BetterPlayer(
         lastFormatHint = formatHint
         lastHeaders = headers
         lastCacheKey = cacheKey
+        lastTargetOffsetMs = targetOffsetMs
+        lastMinOffsetMs = minOffsetMs
+        lastMaxOffsetMs = maxOffsetMs
+        lastMinPlaybackSpeed = minPlaybackSpeed
+        lastMaxPlaybackSpeed = maxPlaybackSpeed
         retryCount = 0
         cancelRetry()
 
@@ -310,7 +325,18 @@ internal class BetterPlayer(
         } else {
             dataSourceFactory = DefaultDataSource.Factory(context)
         }
-        val mediaSource = buildMediaSource(uri, dataSourceFactory, formatHint, cacheKey, context)
+        val mediaSource = buildMediaSource(
+            uri,
+            dataSourceFactory,
+            formatHint,
+            cacheKey,
+            context,
+            targetOffsetMs,
+            minOffsetMs,
+            maxOffsetMs,
+            minPlaybackSpeed,
+            maxPlaybackSpeed
+        )
         if (overriddenDuration != 0L) {
             val clippingMediaSource = ClippingMediaSource(mediaSource, 0, overriddenDuration * 1000)
             exoPlayer?.setMediaSource(clippingMediaSource)
@@ -497,7 +523,12 @@ internal class BetterPlayer(
         mediaDataSourceFactory: DataSource.Factory,
         formatHint: String?,
         cacheKey: String?,
-        context: Context
+        context: Context,
+        targetOffsetMs: Long,
+        minOffsetMs: Long,
+        maxOffsetMs: Long,
+        minPlaybackSpeed: Float,
+        maxPlaybackSpeed: Float
     ): MediaSource {
         val type: Int
         if (formatHint == null) {
@@ -519,6 +550,18 @@ internal class BetterPlayer(
         mediaItemBuilder.setUri(uri)
         if (!cacheKey.isNullOrEmpty()) {
             mediaItemBuilder.setCustomCacheKey(cacheKey)
+        }
+
+        if (targetOffsetMs != -1L || minOffsetMs != -1L || maxOffsetMs != -1L ||
+            minPlaybackSpeed != -1.0f || maxPlaybackSpeed != -1.0f
+        ) {
+            val liveConfigurationBuilder = MediaItem.LiveConfiguration.Builder()
+            if (targetOffsetMs != -1L) liveConfigurationBuilder.setTargetOffsetMs(targetOffsetMs)
+            if (minOffsetMs != -1L) liveConfigurationBuilder.setMinOffsetMs(minOffsetMs)
+            if (maxOffsetMs != -1L) liveConfigurationBuilder.setMaxOffsetMs(maxOffsetMs)
+            if (minPlaybackSpeed != -1.0f) liveConfigurationBuilder.setMinPlaybackSpeed(minPlaybackSpeed)
+            if (maxPlaybackSpeed != -1.0f) liveConfigurationBuilder.setMaxPlaybackSpeed(maxPlaybackSpeed)
+            mediaItemBuilder.setLiveConfiguration(liveConfigurationBuilder.build())
         }
         val mediaItem = mediaItemBuilder.build()
         var drmSessionManagerProvider: DrmSessionManagerProvider? = null
@@ -647,7 +690,18 @@ internal class BetterPlayer(
                             val factory = DataSourceUtils.getDataSourceFactory(
                                 DataSourceUtils.getUserAgent(lastHeaders), lastHeaders
                             )
-                            val ms = buildMediaSource(uri, factory, lastFormatHint, lastCacheKey, ctx)
+                            val ms = buildMediaSource(
+                                uri,
+                                factory,
+                                lastFormatHint,
+                                lastCacheKey,
+                                ctx,
+                                lastTargetOffsetMs,
+                                lastMinOffsetMs,
+                                lastMaxOffsetMs,
+                                lastMinPlaybackSpeed,
+                                lastMaxPlaybackSpeed
+                            )
                             exoPlayer.setMediaSource(ms)
                         }
                         exoPlayer.prepare()

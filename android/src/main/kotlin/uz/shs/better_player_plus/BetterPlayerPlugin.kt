@@ -288,7 +288,8 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
                 0L,
                 overriddenDuration.toLong(),
                 null,
-                null, null, null
+                null, null, null,
+                -1L, -1L, -1L, -1.0f, -1.0f
             )
         } else {
             val useCache = getParameter(dataSource, USE_CACHE_PARAMETER, false)
@@ -318,7 +319,12 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
                 licenseUrl,
                 drmHeaders,
                 cacheKey,
-                clearKey
+                clearKey,
+                getParameter(dataSource, TARGET_OFFSET_MS, -1L),
+                getParameter(dataSource, MIN_OFFSET_MS, -1L),
+                getParameter(dataSource, MAX_OFFSET_MS, -1L),
+                getParameter(dataSource, MIN_PLAYBACK_SPEED, -1.0f),
+                getParameter(dataSource, MAX_PLAYBACK_SPEED, -1.0f)
             )
         }
     }
@@ -579,5 +585,10 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
         private const val DISPOSE_METHOD = "dispose"
         private const val PRE_CACHE_METHOD = "preCache"
         private const val STOP_PRE_CACHE_METHOD = "stopPreCache"
+        private const val TARGET_OFFSET_MS = "targetOffsetMs"
+        private const val MIN_OFFSET_MS = "minOffsetMs"
+        private const val MAX_OFFSET_MS = "maxOffsetMs"
+        private const val MIN_PLAYBACK_SPEED = "minPlaybackSpeed"
+        private const val MAX_PLAYBACK_SPEED = "maxPlaybackSpeed"
     }
 }

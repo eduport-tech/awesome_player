@@ -324,11 +324,6 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   /// Set data source for playing a video from obtained from
   /// the network.
   ///
-  /// The URI for the video is given by the [dataSource] argument and must not be
-  /// null.
-  /// **Android only**: The [formatHint] option allows the caller to override
-  /// the video format detection code.
-  /// ClearKey DRM only supported on Android.
   Future<void> setNetworkDataSource(
     String dataSource, {
     VideoFormat? formatHint,
@@ -349,6 +344,11 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     String? activityName,
     String? clearKey,
     String? videoExtension,
+    int? targetOffsetMs,
+    int? minOffsetMs,
+    int? maxOffsetMs,
+    double? minPlaybackSpeed,
+    double? maxPlaybackSpeed,
   }) {
     return _setDataSource(
       DataSource(
@@ -372,6 +372,11 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
         activityName: activityName,
         clearKey: clearKey,
         videoExtension: videoExtension,
+        targetOffsetMs: targetOffsetMs,
+        minOffsetMs: minOffsetMs,
+        maxOffsetMs: maxOffsetMs,
+        minPlaybackSpeed: minPlaybackSpeed,
+        maxPlaybackSpeed: maxPlaybackSpeed,
       ),
     );
   }

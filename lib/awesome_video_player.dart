@@ -12,6 +12,7 @@ export 'src/configuration/better_player_cache_configuration.dart';
 export 'src/configuration/better_player_configuration.dart';
 export 'src/configuration/better_player_controls_configuration.dart';
 export 'src/configuration/better_player_data_source.dart';
+export 'src/configuration/better_player_live_configuration.dart';
 export 'src/configuration/better_player_data_source_type.dart';
 export 'src/configuration/better_player_drm_configuration.dart';
 export 'src/configuration/better_player_drm_type.dart';
@@ -39,5 +40,6 @@ export 'src/subtitles/better_player_subtitles_source_type.dart';
 export 'src/video_player/video_player.dart' show VideoPlayerValue;
 export 'src/configuration/interactive_viewer_configuration.dart';
 export 'src/configuration/interctive_viewer.dart';
+
 
 

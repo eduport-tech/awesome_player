@@ -66,8 +66,9 @@ abstract class VideoPlayerPlatform {
   }
 
   /// Creates an instance of a video player and returns its textureId.
-  Future<int?> create(
-      {BetterPlayerBufferingConfiguration? bufferingConfiguration}) {
+  Future<int?> create({
+    BetterPlayerBufferingConfiguration? bufferingConfiguration,
+  }) {
     throw UnimplementedError('create() has not been implemented.');
   }
 
@@ -232,6 +233,11 @@ class DataSource {
     this.activityName,
     this.clearKey,
     this.videoExtension,
+    this.targetOffsetMs,
+    this.minOffsetMs,
+    this.maxOffsetMs,
+    this.minPlaybackSpeed,
+    this.maxPlaybackSpeed,
   }) : assert(uri == null || asset == null);
 
   /// Describes the type of data source this [VideoPlayerController]
@@ -310,6 +316,16 @@ class DataSource {
 
   final String? videoExtension;
 
+  final int? targetOffsetMs;
+
+  final int? minOffsetMs;
+
+  final int? maxOffsetMs;
+
+  final double? minPlaybackSpeed;
+
+  final double? maxPlaybackSpeed;
+
   /// Key to compare DataSource
   String get key {
     String? result = "";
@@ -336,6 +352,67 @@ class DataSource {
         ' useCache: $useCache,maxCacheSize: $maxCacheSize, maxCacheFileSize: '
         '$maxCacheFileSize, showNotification: $showNotification, title: $title,'
         ' author: $author}';
+  }
+
+  DataSource copyWith({
+    DataSourceType? sourceType,
+    String? uri,
+    VideoFormat? formatHint,
+    String? asset,
+    String? package,
+    Map<String, String?>? headers,
+    bool? useCache,
+    int? maxCacheSize,
+    int? maxCacheFileSize,
+    String? cacheKey,
+    bool? showNotification,
+    String? title,
+    String? author,
+    String? imageUrl,
+    String? notificationChannelName,
+    Duration? overriddenDuration,
+    String? licenseUrl,
+    String? certificateUrl,
+    Map<String, String>? drmHeaders,
+    String? activityName,
+    String? clearKey,
+    String? videoExtension,
+    int? targetOffsetMs,
+    int? minOffsetMs,
+    int? maxOffsetMs,
+    double? minPlaybackSpeed,
+    double? maxPlaybackSpeed,
+  }) {
+    return DataSource(
+      sourceType: sourceType ?? this.sourceType,
+      uri: uri ?? this.uri,
+      formatHint: formatHint ?? this.formatHint,
+      asset: asset ?? this.asset,
+      package: package ?? this.package,
+      headers: headers ?? this.headers,
+      useCache: useCache ?? this.useCache,
+      maxCacheSize: maxCacheSize ?? this.maxCacheSize,
+      maxCacheFileSize: maxCacheFileSize ?? this.maxCacheFileSize,
+      cacheKey: cacheKey ?? this.cacheKey,
+      showNotification: showNotification ?? this.showNotification,
+      title: title ?? this.title,
+      author: author ?? this.author,
+      imageUrl: imageUrl ?? this.imageUrl,
+      notificationChannelName:
+          notificationChannelName ?? this.notificationChannelName,
+      overriddenDuration: overriddenDuration ?? this.overriddenDuration,
+      licenseUrl: licenseUrl ?? this.licenseUrl,
+      certificateUrl: certificateUrl ?? this.certificateUrl,
+      drmHeaders: drmHeaders ?? this.drmHeaders,
+      activityName: activityName ?? this.activityName,
+      clearKey: clearKey ?? this.clearKey,
+      videoExtension: videoExtension ?? this.videoExtension,
+      targetOffsetMs: targetOffsetMs ?? this.targetOffsetMs,
+      minOffsetMs: minOffsetMs ?? this.minOffsetMs,
+      maxOffsetMs: maxOffsetMs ?? this.maxOffsetMs,
+      minPlaybackSpeed: minPlaybackSpeed ?? this.minPlaybackSpeed,
+      maxPlaybackSpeed: maxPlaybackSpeed ?? this.maxPlaybackSpeed,
+    );
   }
 }
 

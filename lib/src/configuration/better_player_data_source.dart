@@ -7,6 +7,7 @@ import 'package:awesome_video_player/src/subtitles/better_player_subtitles_sourc
 import 'package:flutter/widgets.dart';
 
 import 'better_player_cache_configuration.dart';
+import 'better_player_live_configuration.dart';
 
 ///Representation of data source which will be played in Better Player. Allows
 ///to setup all necessary configuration connected to video source.
@@ -76,6 +77,10 @@ class BetterPlayerDataSource {
   ///platform.
   final BetterPlayerBufferingConfiguration bufferingConfiguration;
 
+  ///Configuration of live streaming. Currently only supported in Android
+  ///platform.
+  final BetterPlayerLiveConfiguration liveConfiguration;
+
   BetterPlayerDataSource(
     this.type,
     this.url, {
@@ -99,6 +104,7 @@ class BetterPlayerDataSource {
     this.drmConfiguration,
     this.placeholder,
     this.bufferingConfiguration = const BetterPlayerBufferingConfiguration(),
+    this.liveConfiguration = const BetterPlayerLiveConfiguration(),
   }) : assert(
             (type == BetterPlayerDataSourceType.network ||
                     type == BetterPlayerDataSourceType.file) ||
@@ -126,6 +132,8 @@ class BetterPlayerDataSource {
     Widget? placeholder,
     BetterPlayerBufferingConfiguration bufferingConfiguration =
         const BetterPlayerBufferingConfiguration(),
+    BetterPlayerLiveConfiguration liveConfiguration =
+        const BetterPlayerLiveConfiguration(),
   }) {
     return BetterPlayerDataSource(
       BetterPlayerDataSourceType.network,
@@ -144,6 +152,7 @@ class BetterPlayerDataSource {
       drmConfiguration: drmConfiguration,
       placeholder: placeholder,
       bufferingConfiguration: bufferingConfiguration,
+      liveConfiguration: liveConfiguration,
     );
   }
 
@@ -172,6 +181,7 @@ class BetterPlayerDataSource {
           const BetterPlayerNotificationConfiguration(showNotification: false),
       overriddenDuration: overriddenDuration,
       placeholder: placeholder,
+      liveConfiguration: const BetterPlayerLiveConfiguration(),
     );
   }
 
@@ -203,6 +213,7 @@ class BetterPlayerDataSource {
           const BetterPlayerNotificationConfiguration(showNotification: false),
       overriddenDuration: overriddenDuration,
       placeholder: placeholder,
+      liveConfiguration: const BetterPlayerLiveConfiguration(),
     );
   }
 
@@ -227,6 +238,8 @@ class BetterPlayerDataSource {
     Widget? placeholder,
     BetterPlayerBufferingConfiguration? bufferingConfiguration =
         const BetterPlayerBufferingConfiguration(),
+    BetterPlayerLiveConfiguration? liveConfiguration =
+        const BetterPlayerLiveConfiguration(),
   }) {
     return BetterPlayerDataSource(
       type ?? this.type,
@@ -249,6 +262,7 @@ class BetterPlayerDataSource {
       placeholder: placeholder ?? this.placeholder,
       bufferingConfiguration:
           bufferingConfiguration ?? this.bufferingConfiguration,
+      liveConfiguration: liveConfiguration ?? this.liveConfiguration,
     );
   }
 }

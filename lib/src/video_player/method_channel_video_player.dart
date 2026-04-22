@@ -95,6 +95,11 @@ class MethodChannelVideoPlayer extends VideoPlayerPlatform {
           'activityName': dataSource.activityName,
           'clearKey': dataSource.clearKey,
           'videoExtension': dataSource.videoExtension,
+          'targetOffsetMs': dataSource.targetOffsetMs,
+          'minOffsetMs': dataSource.minOffsetMs,
+          'maxOffsetMs': dataSource.maxOffsetMs,
+          'minPlaybackSpeed': dataSource.minPlaybackSpeed,
+          'maxPlaybackSpeed': dataSource.maxPlaybackSpeed,
         };
         break;
       case DataSourceType.file:

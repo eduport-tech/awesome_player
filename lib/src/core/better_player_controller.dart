@@ -521,6 +521,14 @@ class BetterPlayerController {
               _betterPlayerDataSource?.notificationConfiguration?.activityName,
           clearKey: _betterPlayerDataSource?.drmConfiguration?.clearKey,
           videoExtension: _betterPlayerDataSource!.videoExtension,
+          targetOffsetMs:
+              _betterPlayerDataSource!.liveConfiguration.targetOffsetMs,
+          minOffsetMs: _betterPlayerDataSource!.liveConfiguration.minOffsetMs,
+          maxOffsetMs: _betterPlayerDataSource!.liveConfiguration.maxOffsetMs,
+          minPlaybackSpeed:
+              _betterPlayerDataSource!.liveConfiguration.minPlaybackSpeed,
+          maxPlaybackSpeed:
+              _betterPlayerDataSource!.liveConfiguration.maxPlaybackSpeed,
         );
 
         break;
