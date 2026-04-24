@@ -30,3 +30,4 @@
     * [Manual dispose](manualdispose.md)
     * [Source load](sourceload.md)
     * [Multiple gesture detector](multiplegesturedetector.md)
+    * [HLS Live Guide](hls_live_documentation.md)
