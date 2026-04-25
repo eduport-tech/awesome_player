@@ -126,10 +126,10 @@ class _NormalPlayerPageState extends State<NormalPlayerPage> {
       url,
       videoFormat: _videoFormat,
       bufferingConfiguration: BetterPlayerBufferingConfiguration(
-        minBufferMs: int.tryParse(_minBufferController.text) ?? 15000,
+        minBufferMs: int.tryParse(_minBufferController.text) ?? 4000,
         maxBufferMs: int.tryParse(_maxBufferController.text) ?? 50000,
         bufferForPlaybackMs:
-            int.tryParse(_bufferForPlaybackController.text) ?? 2500,
+            int.tryParse(_bufferForPlaybackController.text) ?? 1500,
         bufferForPlaybackAfterRebufferMs:
             int.tryParse(_bufferForPlaybackAfterRebufferController.text) ??
                 5000,

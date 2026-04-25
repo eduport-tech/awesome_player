@@ -665,6 +665,12 @@ internal class BetterPlayer(
                 }
             }
 
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    retryCount = 0
+                }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                     // Immediately recover from live-edge seek errors — no retry counter.
