@@ -361,7 +361,7 @@ class BetterPlayerController {
 
       /// Load tracks
       if (_betterPlayerDataSource?.useAsmsTracks == true) {
-        _betterPlayerAsmsTracks = _response.tracks ?? [];
+        _betterPlayerAsmsTracks = (_response.tracks ?? []).sorted((a, b) => (a.height??0).compareTo(b.height??0));
       }
 
       /// Load subtitles

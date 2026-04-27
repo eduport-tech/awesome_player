@@ -3,6 +3,7 @@ import 'dart:developer';
 import 'package:awesome_video_player/awesome_video_player.dart';
 import 'package:awesome_video_player_example/constants.dart';
 import 'package:awesome_video_player_example/pages/custom_controls/hotstar_control.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';

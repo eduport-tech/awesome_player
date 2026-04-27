@@ -155,13 +155,14 @@ class _CustomPlayerControlsState extends State<AwsomePlayerControls>
     }
   }
 
-  void _watchAsStreamedLive() {
+  void _watchAsStreamedLive()async {
     setState(() {
       _liveStreamEnded = false;
     });
     final dataSource = widget.betterPlayerController.betterPlayerDataSource;
     if (dataSource != null) {
       widget.betterPlayerController.setupDataSource(dataSource);
+      await widget.betterPlayerController.seekTo(Duration.zero);
       widget.betterPlayerController.play();
     }
   }
