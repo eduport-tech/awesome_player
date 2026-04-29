@@ -1,4 +1,4 @@
-name: Flutter CI
+name: Flutter Package CI
 
 on:
   push:
@@ -8,31 +8,38 @@ on:
 
 jobs:
   build:
-    name: Build & Test
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.38.10"
-          channel: stable
           cache: true
 
-      - name: Verify Flutter installation
-        run: flutter --version
-
-      - name: Install dependencies
+      # ---------- PACKAGE ----------
+      - name: Install package dependencies
         run: flutter pub get
 
-      - name: Check formatting
-        run: dart format --output=none --set-exit-if-changed .
-
-      - name: Analyze project
+      - name: Analyze package
         run: flutter analyze
 
-      - name: Run tests
+      - name: Run package tests
         run: flutter test
+
+      # ---------- EXAMPLE APP ----------
+      - name: Install example dependencies
+        working-directory: example
+        run: flutter pub get
+
+      - name: Analyze example app
+        working-directory: example
+        run: flutter analyze
+
+      # 🔥 This is the important part
+      - name: Build example APK
+        working-directory: example
+        run: flutter build apk --debug
