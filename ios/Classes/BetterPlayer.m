@@ -300,9 +300,7 @@ AVPictureInPictureController *_pipController;
 - (void)itemNewAccessLogEntry:(NSNotification*)notification {
     AVPlayerItem *item = (AVPlayerItem *)notification.object;
     AVPlayerItemAccessLogEvent *lastEvent = item.accessLog.events.lastObject;
-    if (lastEvent && lastEvent.URI) {
-        NSLog(@"HLS chunk downloaded: %@", lastEvent.URI);
-    }
+    
 }
 
 
@@ -318,11 +316,10 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 };
 
 - (AVMutableVideoComposition*)getVideoCompositionWithTransform:(CGAffineTransform)transform
-                                                     withAsset:(AVAsset*)asset
                                                 withVideoTrack:(AVAssetTrack*)videoTrack {
     AVMutableVideoCompositionInstruction* instruction =
     [AVMutableVideoCompositionInstruction videoCompositionInstruction];
-    instruction.timeRange = CMTimeRangeMake(kCMTimeZero, [asset duration]);
+    instruction.timeRange = CMTimeRangeMake(kCMTimeZero, videoTrack.timeRange.duration);
     AVMutableVideoCompositionLayerInstruction* layerInstruction =
     [AVMutableVideoCompositionLayerInstruction
      videoCompositionLayerInstructionWithAssetTrack:videoTrack];
@@ -420,7 +417,8 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 
     AVAsset* asset = [item asset];
     void (^assetCompletionHandler)(void) = ^{
-        if ([asset statusOfValueForKey:@"tracks" error:nil] == AVKeyValueStatusLoaded) {
+        if ([asset statusOfValueForKey:@"tracks" error:nil] == AVKeyValueStatusLoaded &&
+            [asset statusOfValueForKey:@"duration" error:nil] == AVKeyValueStatusLoaded) {
             NSArray* tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
             if ([tracks count] > 0) {
                 AVAssetTrack* videoTrack = tracks[0];
@@ -436,8 +434,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
                         // use with media served using HTTP Live Streaming.
                         AVMutableVideoComposition* videoComposition =
                         [self getVideoCompositionWithTransform:self->_preferredTransform
-                                                     withAsset:asset
-                                                withVideoTrack:videoTrack];
+                                               withVideoTrack:videoTrack];
                         item.videoComposition = videoComposition;
                     }
                 };
@@ -447,7 +444,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
         }
     };
 
-    [asset loadValuesAsynchronouslyForKeys:@[ @"tracks" ] completionHandler:assetCompletionHandler];
+    [asset loadValuesAsynchronouslyForKeys:@[ @"tracks", @"duration" ] completionHandler:assetCompletionHandler];
     [self addObservers:item];
 }
 
@@ -705,7 +702,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
         CGAffineTransform prefTrans = track.assetTrack.preferredTransform;
         CGSize realSize = CGSizeApplyAffineTransform(naturalSize, prefTrans);
 
-        int64_t duration = [BetterPlayerTimeUtils FLTCMTimeToMillis:(_player.currentItem.asset.duration)];
+        int64_t duration = [self duration];
         if (_overriddenDuration > 0 && duration > _overriddenDuration){
             _player.currentItem.forwardPlaybackEndTime = CMTimeMake(_overriddenDuration/1000, 1);
         }
@@ -765,11 +762,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     }
 
     CMTime time;
-    if (@available(iOS 13, *)) {
-        time =  [[_player currentItem] duration];
-    } else {
-        time =  [[[_player currentItem] asset] duration];
-    }
+    time =  [[_player currentItem] duration];
     if (!CMTIME_IS_INVALID(_player.currentItem.forwardPlaybackEndTime)) {
         time = [[_player currentItem] forwardPlaybackEndTime];
     }
