@@ -11,6 +11,7 @@ static void* playbackLikelyToKeepUpContext = &playbackLikelyToKeepUpContext;
 static void* playbackBufferEmptyContext = &playbackBufferEmptyContext;
 static void* playbackBufferFullContext = &playbackBufferFullContext;
 static void* presentationSizeContext = &presentationSizeContext;
+static const int maxRetryCount = 3;
 
 
 #if TARGET_OS_IOS
@@ -19,7 +20,158 @@ API_AVAILABLE(ios(9.0))
 AVPictureInPictureController *_pipController;
 #endif
 
+@interface BetterPlayer ()
+@property(nonatomic, strong) NSTimer *retryTimer;
+@property(nonatomic, strong) NSURL *lastUrl;
+@property(nonatomic, copy) NSString *lastCertificateUrl;
+@property(nonatomic, copy) NSString *lastLicenseUrl;
+@property(nonatomic, copy) NSDictionary *lastHeaders;
+@property(nonatomic) BOOL lastUseCache;
+@property(nonatomic, copy) NSString *lastCacheKey;
+@property(nonatomic, strong) CacheManager *lastCacheManager;
+@property(nonatomic) int lastOverriddenDuration;
+@property(nonatomic, copy) NSString *lastVideoExtension;
+@end
+
 @implementation BetterPlayer
+
+- (void)cancelRetry {
+    [self.retryTimer invalidate];
+    self.retryTimer = nil;
+}
+
+- (AVPlayerItem*)buildPlayerItemWithURL:(NSURL*)url
+                     withCertificateUrl:(NSString*)certificateUrl
+                          withLicenseUrl:(NSString*)licenseUrl
+                             withHeaders:(NSDictionary*)headers
+                               withCache:(BOOL)useCache
+                                cacheKey:(NSString*)cacheKey
+                            cacheManager:(CacheManager*)cacheManager
+                           videoExtension:(NSString*)videoExtension {
+    if (headers == [NSNull null] || headers == NULL){
+        headers = @{};
+    }
+
+    if (useCache){
+        if (cacheKey == [NSNull null]){
+            cacheKey = nil;
+        }
+        if (videoExtension == [NSNull null]){
+            videoExtension = nil;
+        }
+
+        return [cacheManager getCachingPlayerItemForNormalPlayback:url cacheKey:cacheKey videoExtension: videoExtension headers:headers];
+    }
+
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url
+                                            options:@{@"AVURLAssetHTTPHeaderFieldsKey" : headers}];
+    if (certificateUrl && certificateUrl != [NSNull null] && [certificateUrl length] > 0) {
+        NSURL * certificateNSURL = [[NSURL alloc] initWithString: certificateUrl];
+        NSURL * licenseNSURL = [[NSURL alloc] initWithString: licenseUrl];
+        _loaderDelegate = [[BetterPlayerEzDrmAssetsLoaderDelegate alloc] init:certificateNSURL withLicenseURL:licenseNSURL];
+        dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_DEFAULT, -1);
+        dispatch_queue_t streamQueue = dispatch_queue_create("streamQueue", qos);
+        [asset.resourceLoader setDelegate:_loaderDelegate queue:streamQueue];
+    }
+    return [AVPlayerItem playerItemWithAsset:asset];
+}
+
+- (void)retryCurrentDataSource {
+    self.retryTimer = nil;
+    if (_disposed || self.lastUrl == nil) {
+        return;
+    }
+
+    bool wasPlaying = _isPlaying;
+    CMTime resumeTime = _player.currentTime;
+    if ([self isLiveStreamItem:_player.currentItem]) {
+        resumeTime = kCMTimeInvalid;
+    }
+
+    NSLog(@"BetterPlayer iOS: retrying playback %d/%d", _failedCount, maxRetryCount);
+    [self removeObservers];
+    AVPlayerItem *item = [self buildPlayerItemWithURL:self.lastUrl
+                                  withCertificateUrl:self.lastCertificateUrl
+                                      withLicenseUrl:self.lastLicenseUrl
+                                         withHeaders:self.lastHeaders
+                                           withCache:self.lastUseCache
+                                            cacheKey:self.lastCacheKey
+                                        cacheManager:self.lastCacheManager
+                                      videoExtension:self.lastVideoExtension];
+
+    if (@available(iOS 10.0, *) && self.lastOverriddenDuration > 0) {
+        _overriddenDuration = self.lastOverriddenDuration;
+    }
+    [self setDataSourcePlayerItem:item withKey:_key];
+
+    if (!CMTIME_IS_INVALID(resumeTime)) {
+        [_player seekToTime:resumeTime toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+    }
+    if (wasPlaying) {
+        [self play];
+    }
+}
+
+- (BOOL)scheduleRetryWithMessage:(NSString*)message {
+    if (_disposed || self.lastUrl == nil) {
+        return NO;
+    }
+
+    if (self.retryTimer != nil) {
+        return YES;
+    }
+
+    if (_failedCount >= maxRetryCount) {
+        return NO;
+    }
+
+    _failedCount++;
+    NSTimeInterval delay = (NSTimeInterval)(1 << (_failedCount - 1));
+    NSLog(@"BetterPlayer iOS: %@ - retry %d/%d in %.0fs", message, _failedCount, maxRetryCount, delay);
+    [self cancelRetry];
+    self.retryTimer = [NSTimer scheduledTimerWithTimeInterval:delay
+                                                       target:self
+                                                     selector:@selector(retryCurrentDataSource)
+                                                     userInfo:nil
+                                                      repeats:NO];
+    return YES;
+}
+
+- (BOOL)isLiveStreamItem:(AVPlayerItem *)item {
+    return item != nil && CMTIME_IS_INDEFINITE(item.duration);
+}
+
+- (BOOL)getSeekableTimeRange:(CMTimeRange *)range forItem:(AVPlayerItem *)item {
+    if (item == nil || item.seekableTimeRanges.count == 0) {
+        return NO;
+    }
+
+    CMTimeRange seekableRange =
+        [item.seekableTimeRanges.lastObject CMTimeRangeValue];
+    if (CMTIMERANGE_IS_INVALID(seekableRange) ||
+        CMTIME_IS_INVALID(seekableRange.start) ||
+        CMTIME_IS_INVALID(seekableRange.duration)) {
+        return NO;
+    }
+
+    if (range != NULL) {
+        *range = seekableRange;
+    }
+    return YES;
+}
+
+- (CMTime)liveWindowSeekTimeForLocation:(int)location
+                          seekableRange:(CMTimeRange)seekableRange {
+    int64_t durationMs =
+        [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+    int clampedLocation = MAX(0, MIN(location, (int)durationMs));
+    if (durationMs > 500 && clampedLocation >= durationMs - 500) {
+        clampedLocation = (int)durationMs - 500;
+    }
+    CMTime relativeTime = CMTimeMake(clampedLocation, 1000);
+    return CMTimeAdd(seekableRange.start, relativeTime);
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super init];
     NSAssert(self, @"super init cannot be nil");
@@ -79,6 +231,10 @@ AVPictureInPictureController *_pipController;
 }
 
 - (void)clear {
+    [self cancelRetry];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(startStalledCheck)
+                                               object:nil];
     _isInitialized = false;
     _isPlaying = false;
     _disposed = false;
@@ -227,30 +383,27 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     if (headers == [NSNull null] || headers == NULL){
         headers = @{};
     }
-    
-    AVPlayerItem* item;
-    if (useCache){
-        if (cacheKey == [NSNull null]){
-            cacheKey = nil;
-        }
-        if (videoExtension == [NSNull null]){
-            videoExtension = nil;
-        }
-        
-        item = [cacheManager getCachingPlayerItemForNormalPlayback:url cacheKey:cacheKey videoExtension: videoExtension headers:headers];
-    } else {
-        AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url
-                                                options:@{@"AVURLAssetHTTPHeaderFieldsKey" : headers}];
-        if (certificateUrl && certificateUrl != [NSNull null] && [certificateUrl length] > 0) {
-            NSURL * certificateNSURL = [[NSURL alloc] initWithString: certificateUrl];
-            NSURL * licenseNSURL = [[NSURL alloc] initWithString: licenseUrl];
-            _loaderDelegate = [[BetterPlayerEzDrmAssetsLoaderDelegate alloc] init:certificateNSURL withLicenseURL:licenseNSURL];
-            dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_DEFAULT, -1);
-            dispatch_queue_t streamQueue = dispatch_queue_create("streamQueue", qos);
-            [asset.resourceLoader setDelegate:_loaderDelegate queue:streamQueue];
-        }
-        item = [AVPlayerItem playerItemWithAsset:asset];
-    }
+
+    [self cancelRetry];
+    _failedCount = 0;
+    self.lastUrl = url;
+    self.lastCertificateUrl = certificateUrl != [NSNull null] ? certificateUrl : nil;
+    self.lastLicenseUrl = licenseUrl != [NSNull null] ? licenseUrl : nil;
+    self.lastHeaders = headers;
+    self.lastUseCache = useCache;
+    self.lastCacheKey = cacheKey != [NSNull null] ? cacheKey : nil;
+    self.lastCacheManager = cacheManager;
+    self.lastOverriddenDuration = overriddenDuration;
+    self.lastVideoExtension = videoExtension != [NSNull null] ? videoExtension : nil;
+
+    AVPlayerItem* item = [self buildPlayerItemWithURL:url
+                                  withCertificateUrl:certificateUrl
+                                      withLicenseUrl:licenseUrl
+                                         withHeaders:headers
+                                           withCache:useCache
+                                            cacheKey:cacheKey
+                                        cacheManager:cacheManager
+                                      videoExtension:videoExtension];
 
     if (@available(iOS 10.0, *) && overriddenDuration > 0) {
         _overriddenDuration = overriddenDuration;
@@ -313,6 +466,11 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     } else {
         _stalledCount++;
         if (_stalledCount > 15){
+            if ([self scheduleRetryWithMessage:@"playback stalled"]) {
+                _stalledCount = 0;
+                _isStalledCheckStarted = false;
+                return;
+            }
             if (_eventSink != nil) {
                 _eventSink([FlutterError
                         errorWithCode:@"VideoError"
@@ -370,6 +528,11 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
             }
         }
 
+        if (_player.rate > 0) {
+            [self cancelRetry];
+            _failedCount = 0;
+        }
+
         if (_player.rate == 0 && //if player rate dropped to 0
             CMTIME_COMPARE_INLINE(_player.currentItem.currentTime, >, kCMTimeZero) && //if video was started
             CMTIME_COMPARE_INLINE(_player.currentItem.currentTime, <, _player.currentItem.duration) && //but not yet finished
@@ -381,6 +544,11 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     if (context == timeRangeContext) {
         if (_eventSink != nil) {
             NSMutableArray<NSArray<NSNumber*>*>* values = [[NSMutableArray alloc] init];
+            AVPlayerItem *currentItem = _player.currentItem;
+            CMTimeRange seekableRange;
+            BOOL hasSeekableRange =
+                [self isLiveStreamItem:currentItem] &&
+                [self getSeekableTimeRange:&seekableRange forItem:currentItem];
             for (NSValue* rangeValue in [object loadedTimeRanges]) {
                 CMTimeRange range = [rangeValue CMTimeRangeValue];
                 int64_t start = [BetterPlayerTimeUtils FLTCMTimeToMillis:(range.start)];
@@ -390,6 +558,18 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
                     if (end > endTime){
                         end = endTime;
                     }
+                }
+
+                if (hasSeekableRange) {
+                    int64_t seekableStart =
+                        [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.start];
+                    int64_t seekableDuration =
+                        [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+                    int64_t seekableEnd = seekableStart + seekableDuration;
+                    start = MAX(start, seekableStart);
+                    end = MIN(end, seekableEnd);
+                    start = MAX(0, start - seekableStart);
+                    end = MAX(0, end - seekableStart);
                 }
 
                 [values addObject:@[ @(start), @(end) ]];
@@ -408,6 +588,9 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
                 NSLog(@"Failed to load video:");
                 NSLog(item.error.debugDescription);
 
+                if ([self scheduleRetryWithMessage:[item.error localizedDescription]]) {
+                    break;
+                }
                 if (_eventSink != nil) {
                     _eventSink([FlutterError
                                 errorWithCode:@"VideoError"
@@ -424,6 +607,8 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
         }
     } else if (context == playbackLikelyToKeepUpContext) {
         if ([[_player currentItem] isPlaybackLikelyToKeepUp]) {
+            [self cancelRetry];
+            _failedCount = 0;
             [self updatePlayingState];
             if (_eventSink != nil) {
                 _eventSink(@{@"event" : @"bufferingEnd", @"key" : _key});
@@ -550,6 +735,19 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 }
 
 - (int64_t)position {
+    AVPlayerItem *currentItem = _player.currentItem;
+    if ([self isLiveStreamItem:currentItem]) {
+        CMTimeRange seekableRange;
+        if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
+            CMTime relativeTime =
+                CMTimeSubtract(_player.currentTime, seekableRange.start);
+            int64_t positionMs =
+                [BetterPlayerTimeUtils FLTCMTimeToMillis:relativeTime];
+            int64_t durationMs =
+                [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+            return MAX(0, MIN(positionMs, durationMs));
+        }
+    }
     return [BetterPlayerTimeUtils FLTCMTimeToMillis:([_player currentTime])];
 }
 
@@ -558,6 +756,14 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 }
 
 - (int64_t)duration {
+    AVPlayerItem *currentItem = _player.currentItem;
+    if ([self isLiveStreamItem:currentItem]) {
+        CMTimeRange seekableRange;
+        if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
+            return [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+        }
+    }
+
     CMTime time;
     if (@available(iOS 13, *)) {
         time =  [[_player currentItem] duration];
@@ -576,6 +782,11 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     if (currentItem && currentItem.seekableTimeRanges.count > 0) {
         CMTimeRange seekableRange = [currentItem.seekableTimeRanges.lastObject CMTimeRangeValue];
         CMTime liveEdge = CMTimeAdd(seekableRange.start, seekableRange.duration);
+        int64_t seekableDurationMs =
+            [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+        if (seekableDurationMs > 500) {
+            liveEdge = CMTimeSubtract(liveEdge, CMTimeMake(500, 1000));
+        }
         
         bool wasPlaying = _isPlaying;
         [_player seekToTime:liveEdge
@@ -593,11 +804,20 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     NSLog(@"Player rate before seek: %f", _player.rate);
     ///When player is playing, pause video, seek to new position and start again. This will prevent issues with seekbar jumps.
     bool wasPlaying = _isPlaying;
+    CMTime targetTime = CMTimeMake(location, 1000);
+    AVPlayerItem *currentItem = _player.currentItem;
+    if ([self isLiveStreamItem:currentItem]) {
+        CMTimeRange seekableRange;
+        if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
+            targetTime = [self liveWindowSeekTimeForLocation:location
+                                               seekableRange:seekableRange];
+        }
+    }
     // if (wasPlaying){
     //     [_player pause];
     // }
 
-    [_player seekToTime:CMTimeMake(location, 1000)
+    [_player seekToTime:targetTime
         toleranceBefore:kCMTimeZero
          toleranceAfter:kCMTimeZero
       completionHandler:^(BOOL finished){

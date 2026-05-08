@@ -300,7 +300,7 @@ class _CustomPlayerControlsState extends State<AwsomePlayerControls>
     final controller = _videoPlayerController;
     final isPlaying = controller?.value.isPlaying == true;
     final isInitialized = controller?.value.initialized == true;
-    final bool isLoading = loadingStatus(controller?.value);
+    final bool isLoading = loadingStatus(controller?.value) && !isPlaying;
     final isFinished = _isVideoFinished();
     final size = MediaQuery.of(context).size;
     final bool hasError = _latestValue?.hasError == true;
