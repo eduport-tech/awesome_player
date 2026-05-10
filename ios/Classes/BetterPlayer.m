@@ -5,17 +5,17 @@
 #import "BetterPlayer.h"
 #import <awesome_video_player/awesome_video_player-Swift.h>
 
-static void* timeRangeContext = &timeRangeContext;
-static void* statusContext = &statusContext;
-static void* playbackLikelyToKeepUpContext = &playbackLikelyToKeepUpContext;
-static void* playbackBufferEmptyContext = &playbackBufferEmptyContext;
-static void* playbackBufferFullContext = &playbackBufferFullContext;
-static void* presentationSizeContext = &presentationSizeContext;
+static void *timeRangeContext = &timeRangeContext;
+static void *statusContext = &statusContext;
+static void *playbackLikelyToKeepUpContext = &playbackLikelyToKeepUpContext;
+static void *playbackBufferEmptyContext = &playbackBufferEmptyContext;
+static void *playbackBufferFullContext = &playbackBufferFullContext;
+static void *presentationSizeContext = &presentationSizeContext;
 static const int maxRetryCount = 3;
 
-
 #if TARGET_OS_IOS
-void (^__strong _Nonnull _restoreUserInterfaceForPIPStopCompletionHandler)(BOOL);
+void (^__strong _Nonnull _restoreUserInterfaceForPIPStopCompletionHandler)(
+    BOOL);
 API_AVAILABLE(ios(9.0))
 AVPictureInPictureController *_pipController;
 #endif
@@ -31,332 +31,383 @@ AVPictureInPictureController *_pipController;
 @property(nonatomic, strong) CacheManager *lastCacheManager;
 @property(nonatomic) int lastOverriddenDuration;
 @property(nonatomic, copy) NSString *lastVideoExtension;
+@property(nonatomic) BOOL isSeeking;
+
 @end
 
 @implementation BetterPlayer
 
 - (void)cancelRetry {
-    [self.retryTimer invalidate];
-    self.retryTimer = nil;
+  [self.retryTimer invalidate];
+  self.retryTimer = nil;
 }
 
-- (AVPlayerItem*)buildPlayerItemWithURL:(NSURL*)url
-                     withCertificateUrl:(NSString*)certificateUrl
-                          withLicenseUrl:(NSString*)licenseUrl
-                             withHeaders:(NSDictionary*)headers
-                               withCache:(BOOL)useCache
-                                cacheKey:(NSString*)cacheKey
-                            cacheManager:(CacheManager*)cacheManager
-                           videoExtension:(NSString*)videoExtension {
-    if (headers == [NSNull null] || headers == NULL){
-        headers = @{};
+- (void)buildPlayerItemWithURL:(NSURL *)url
+            withCertificateUrl:(NSString *)certificateUrl
+                withLicenseUrl:(NSString *)licenseUrl
+                   withHeaders:(NSDictionary *)headers
+                     withCache:(BOOL)useCache
+                      cacheKey:(NSString *)cacheKey
+                  cacheManager:(CacheManager *)cacheManager
+                videoExtension:(NSString *)videoExtension
+             completionHandler:(void (^)(AVPlayerItem *item))completionHandler {
+  if (headers == [NSNull null] || headers == NULL) {
+    headers = @{};
+  }
+
+  if (useCache) {
+    if (cacheKey == [NSNull null]) {
+      cacheKey = nil;
+    }
+    if (videoExtension == [NSNull null]) {
+      videoExtension = nil;
     }
 
-    if (useCache){
-        if (cacheKey == [NSNull null]){
-            cacheKey = nil;
-        }
-        if (videoExtension == [NSNull null]){
-            videoExtension = nil;
-        }
+    AVPlayerItem *cachedItem =
+        [cacheManager getCachingPlayerItemForNormalPlayback:url
+                                                   cacheKey:cacheKey
+                                             videoExtension:videoExtension
+                                                    headers:headers];
+    completionHandler(cachedItem);
+    return;
+  }
 
-        return [cacheManager getCachingPlayerItemForNormalPlayback:url cacheKey:cacheKey videoExtension: videoExtension headers:headers];
-    }
+  AVURLAsset *asset = [AVURLAsset
+      URLAssetWithURL:url
+              options:@{@"AVURLAssetHTTPHeaderFieldsKey" : headers}];
+  if (certificateUrl && certificateUrl != [NSNull null] &&
+      [certificateUrl length] > 0) {
+    NSURL *certificateNSURL = [[NSURL alloc] initWithString:certificateUrl];
+    NSURL *licenseNSURL = [[NSURL alloc] initWithString:licenseUrl];
+    _loaderDelegate =
+        [[BetterPlayerEzDrmAssetsLoaderDelegate alloc] init:certificateNSURL
+                                             withLicenseURL:licenseNSURL];
+    dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(
+        DISPATCH_QUEUE_SERIAL, QOS_CLASS_DEFAULT, -1);
+    dispatch_queue_t streamQueue = dispatch_queue_create("streamQueue", qos);
+    [asset.resourceLoader setDelegate:_loaderDelegate queue:streamQueue];
+  }
 
-    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url
-                                            options:@{@"AVURLAssetHTTPHeaderFieldsKey" : headers}];
-    if (certificateUrl && certificateUrl != [NSNull null] && [certificateUrl length] > 0) {
-        NSURL * certificateNSURL = [[NSURL alloc] initWithString: certificateUrl];
-        NSURL * licenseNSURL = [[NSURL alloc] initWithString: licenseUrl];
-        _loaderDelegate = [[BetterPlayerEzDrmAssetsLoaderDelegate alloc] init:certificateNSURL withLicenseURL:licenseNSURL];
-        dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_DEFAULT, -1);
-        dispatch_queue_t streamQueue = dispatch_queue_create("streamQueue", qos);
-        [asset.resourceLoader setDelegate:_loaderDelegate queue:streamQueue];
-    }
-    return [AVPlayerItem playerItemWithAsset:asset];
+  NSArray *keys = @[ @"playable", @"tracks", @"duration" ];
+  [asset loadValuesAsynchronouslyForKeys:keys
+                       completionHandler:^{
+                         dispatch_async(dispatch_get_main_queue(), ^{
+                           AVPlayerItem *item =
+                               [AVPlayerItem playerItemWithAsset:asset];
+                           completionHandler(item);
+                         });
+                       }];
 }
 
 - (void)retryCurrentDataSource {
-    self.retryTimer = nil;
-    if (_disposed || self.lastUrl == nil) {
-        return;
-    }
+  self.retryTimer = nil;
+  if (_disposed || self.lastUrl == nil) {
+    return;
+  }
 
-    bool wasPlaying = _isPlaying;
-    CMTime resumeTime = _player.currentTime;
-    if ([self isLiveStreamItem:_player.currentItem]) {
-        resumeTime = kCMTimeInvalid;
-    }
+  bool wasPlaying = _isPlaying;
+  CMTime resumeTime = _player.currentTime;
+  if ([self isLiveStreamItem:_player.currentItem]) {
+    resumeTime = kCMTimeInvalid;
+  }
 
-    NSLog(@"BetterPlayer iOS: retrying playback %d/%d", _failedCount, maxRetryCount);
-    [self removeObservers];
-    AVPlayerItem *item = [self buildPlayerItemWithURL:self.lastUrl
-                                  withCertificateUrl:self.lastCertificateUrl
-                                      withLicenseUrl:self.lastLicenseUrl
-                                         withHeaders:self.lastHeaders
-                                           withCache:self.lastUseCache
-                                            cacheKey:self.lastCacheKey
-                                        cacheManager:self.lastCacheManager
-                                      videoExtension:self.lastVideoExtension];
+  NSLog(@"BetterPlayer iOS: retrying playback %d/%d", _failedCount,
+        maxRetryCount);
+  [self removeObservers];
+  [self buildPlayerItemWithURL:self.lastUrl
+            withCertificateUrl:self.lastCertificateUrl
+                withLicenseUrl:self.lastLicenseUrl
+                   withHeaders:self.lastHeaders
+                     withCache:self.lastUseCache
+                      cacheKey:self.lastCacheKey
+                  cacheManager:self.lastCacheManager
+                videoExtension:self.lastVideoExtension
+             completionHandler:^(AVPlayerItem *item) {
+               if (self->_disposed)
+                 return;
+               if (@available(iOS 10.0, *) && self.lastOverriddenDuration > 0) {
+                 self->_overriddenDuration = self.lastOverriddenDuration;
+               }
+               [self setDataSourcePlayerItem:item withKey:self->_key];
 
-    if (@available(iOS 10.0, *) && self.lastOverriddenDuration > 0) {
-        _overriddenDuration = self.lastOverriddenDuration;
-    }
-    [self setDataSourcePlayerItem:item withKey:_key];
-
-    if (!CMTIME_IS_INVALID(resumeTime)) {
-        [_player seekToTime:resumeTime toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
-    }
-    if (wasPlaying) {
-        [self play];
-    }
+               if (!CMTIME_IS_INVALID(resumeTime)) {
+                 [self->_player seekToTime:resumeTime
+                           toleranceBefore:kCMTimeZero
+                            toleranceAfter:kCMTimeZero];
+               }
+               if (wasPlaying) {
+                 [self play];
+               }
+             }];
 }
 
-- (BOOL)scheduleRetryWithMessage:(NSString*)message {
-    if (_disposed || self.lastUrl == nil) {
-        return NO;
-    }
+- (BOOL)scheduleRetryWithMessage:(NSString *)message {
+  if (_disposed || self.lastUrl == nil) {
+    return NO;
+  }
 
-    if (self.retryTimer != nil) {
-        return YES;
-    }
-
-    if (_failedCount >= maxRetryCount) {
-        return NO;
-    }
-
-    _failedCount++;
-    NSTimeInterval delay = (NSTimeInterval)(1 << (_failedCount - 1));
-    NSLog(@"BetterPlayer iOS: %@ - retry %d/%d in %.0fs", message, _failedCount, maxRetryCount, delay);
-    [self cancelRetry];
-    self.retryTimer = [NSTimer scheduledTimerWithTimeInterval:delay
-                                                       target:self
-                                                     selector:@selector(retryCurrentDataSource)
-                                                     userInfo:nil
-                                                      repeats:NO];
+  if (self.retryTimer != nil) {
     return YES;
+  }
+
+  if (_failedCount >= maxRetryCount) {
+    return NO;
+  }
+
+  _failedCount++;
+  NSTimeInterval delay = (NSTimeInterval)(1 << (_failedCount - 1));
+  NSLog(@"BetterPlayer iOS: %@ - retry %d/%d in %.0fs", message, _failedCount,
+        maxRetryCount, delay);
+  [self cancelRetry];
+  self.retryTimer =
+      [NSTimer scheduledTimerWithTimeInterval:delay
+                                       target:self
+                                     selector:@selector(retryCurrentDataSource)
+                                     userInfo:nil
+                                      repeats:NO];
+  return YES;
 }
 
 - (BOOL)isLiveStreamItem:(AVPlayerItem *)item {
-    return item != nil && CMTIME_IS_INDEFINITE(item.duration);
+  return item != nil && CMTIME_IS_INDEFINITE(item.duration);
 }
 
 - (BOOL)getSeekableTimeRange:(CMTimeRange *)range forItem:(AVPlayerItem *)item {
-    if (item == nil || item.seekableTimeRanges.count == 0) {
-        return NO;
-    }
+  if (item == nil || item.seekableTimeRanges.count == 0) {
+    return NO;
+  }
 
-    CMTimeRange seekableRange =
-        [item.seekableTimeRanges.lastObject CMTimeRangeValue];
-    if (CMTIMERANGE_IS_INVALID(seekableRange) ||
-        CMTIME_IS_INVALID(seekableRange.start) ||
-        CMTIME_IS_INVALID(seekableRange.duration)) {
-        return NO;
-    }
+  CMTimeRange seekableRange =
+      [item.seekableTimeRanges.lastObject CMTimeRangeValue];
+  if (CMTIMERANGE_IS_INVALID(seekableRange) ||
+      CMTIME_IS_INVALID(seekableRange.start) ||
+      CMTIME_IS_INVALID(seekableRange.duration)) {
+    return NO;
+  }
 
-    if (range != NULL) {
-        *range = seekableRange;
-    }
-    return YES;
+  if (range != NULL) {
+    *range = seekableRange;
+  }
+  return YES;
 }
 
 - (CMTime)liveWindowSeekTimeForLocation:(int)location
                           seekableRange:(CMTimeRange)seekableRange {
-    int64_t durationMs =
-        [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
-    int clampedLocation = MAX(0, MIN(location, (int)durationMs));
-    if (durationMs > 500 && clampedLocation >= durationMs - 500) {
-        clampedLocation = (int)durationMs - 500;
-    }
-    CMTime relativeTime = CMTimeMake(clampedLocation, 1000);
-    return CMTimeAdd(seekableRange.start, relativeTime);
+  int64_t durationMs =
+      [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+  int clampedLocation = MAX(0, MIN(location, (int)durationMs));
+  if (durationMs > 500 && clampedLocation >= durationMs - 500) {
+    clampedLocation = (int)durationMs - 500;
+  }
+  CMTime relativeTime = CMTimeMake(clampedLocation, 1000);
+  return CMTimeAdd(seekableRange.start, relativeTime);
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
-    self = [super init];
-    NSAssert(self, @"super init cannot be nil");
-    _isInitialized = false;
-    _isPlaying = false;
-    _disposed = false;
-    _player = [[AVPlayer alloc] init];
-    _player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
-    ///Fix for loading large videos
-    if (@available(iOS 10.0, *)) {
-        _player.automaticallyWaitsToMinimizeStalling = false;
-    }
-    self._observersAdded = false;
-    self.wasLiveStream = false;
-    return self;
+  self = [super init];
+  NSAssert(self, @"super init cannot be nil");
+  _isInitialized = false;
+  _isPlaying = false;
+  _disposed = false;
+  _player = [[AVPlayer alloc] init];
+  _player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+  /// Fix for loading large videos
+  if (@available(iOS 10.0, *)) {
+    _player.automaticallyWaitsToMinimizeStalling = false;
+  }
+  self._observersAdded = false;
+  self.wasLiveStream = false;
+  return self;
 }
 
 - (nonnull UIView *)view {
-    BetterPlayerView *playerView = [[BetterPlayerView alloc] initWithFrame:CGRectZero];
-    playerView.player = _player;
-    return playerView;
+  BetterPlayerView *playerView =
+      [[BetterPlayerView alloc] initWithFrame:CGRectZero];
+  playerView.player = _player;
+  return playerView;
 }
 
-- (void)addObservers:(AVPlayerItem*)item {
-    if (!self._observersAdded){
-        [_player addObserver:self forKeyPath:@"rate" options:0 context:nil];
-        [item addObserver:self forKeyPath:@"loadedTimeRanges" options:0 context:timeRangeContext];
-        [item addObserver:self forKeyPath:@"status" options:0 context:statusContext];
-        [item addObserver:self forKeyPath:@"presentationSize" options:0 context:presentationSizeContext];
-        // Observe duration to detect live→VOD transition (EXT-X-ENDLIST received)
-        [item addObserver:self
-               forKeyPath:@"duration"
-                  options:NSKeyValueObservingOptionNew
-                  context:nil];
-        [item addObserver:self
-               forKeyPath:@"playbackLikelyToKeepUp"
-                  options:0
-                  context:playbackLikelyToKeepUpContext];
-        [item addObserver:self
-               forKeyPath:@"playbackBufferEmpty"
-                  options:0
-                  context:playbackBufferEmptyContext];
-        [item addObserver:self
-               forKeyPath:@"playbackBufferFull"
-                  options:0
-                  context:playbackBufferFullContext];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(itemDidPlayToEndTime:)
-                                                     name:AVPlayerItemDidPlayToEndTimeNotification
-                                                   object:item];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(itemNewAccessLogEntry:)
-                                                     name:AVPlayerItemNewAccessLogEntryNotification
-                                                   object:item];
-        self._observersAdded = true;
-    }
+- (void)addObservers:(AVPlayerItem *)item {
+  if (!self._observersAdded) {
+    [_player addObserver:self forKeyPath:@"rate" options:0 context:nil];
+    [item addObserver:self
+           forKeyPath:@"loadedTimeRanges"
+              options:0
+              context:timeRangeContext];
+    [item addObserver:self
+           forKeyPath:@"status"
+              options:0
+              context:statusContext];
+    [item addObserver:self
+           forKeyPath:@"presentationSize"
+              options:0
+              context:presentationSizeContext];
+    // Observe duration to detect live→VOD transition (EXT-X-ENDLIST received)
+    [item addObserver:self
+           forKeyPath:@"duration"
+              options:NSKeyValueObservingOptionNew
+              context:nil];
+    [item addObserver:self
+           forKeyPath:@"playbackLikelyToKeepUp"
+              options:0
+              context:playbackLikelyToKeepUpContext];
+    [item addObserver:self
+           forKeyPath:@"playbackBufferEmpty"
+              options:0
+              context:playbackBufferEmptyContext];
+    [item addObserver:self
+           forKeyPath:@"playbackBufferFull"
+              options:0
+              context:playbackBufferFullContext];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(itemDidPlayToEndTime:)
+               name:AVPlayerItemDidPlayToEndTimeNotification
+             object:item];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(itemNewAccessLogEntry:)
+               name:AVPlayerItemNewAccessLogEntryNotification
+             object:item];
+    self._observersAdded = true;
+  }
 }
 
 - (void)clear {
-    [self cancelRetry];
-    [NSObject cancelPreviousPerformRequestsWithTarget:self
-                                             selector:@selector(startStalledCheck)
-                                               object:nil];
-    _isInitialized = false;
-    _isPlaying = false;
-    _disposed = false;
-    _failedCount = 0;
-    _key = nil;
-    if (_player.currentItem == nil) {
-        return;
-    }
+  [self cancelRetry];
+  [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                           selector:@selector(startStalledCheck)
+                                             object:nil];
+  _isInitialized = false;
+  _isPlaying = false;
+  _disposed = false;
+  _failedCount = 0;
+  _key = nil;
+  if (_player.currentItem == nil) {
+    return;
+  }
 
-    if (_player.currentItem == nil) {
-        return;
-    }
+  if (_player.currentItem == nil) {
+    return;
+  }
 
-    [self removeObservers];
-    AVAsset* asset = [_player.currentItem asset];
-    [asset cancelLoading];
+  [self removeObservers];
+  AVAsset *asset = [_player.currentItem asset];
+  [asset cancelLoading];
 }
 
-- (void) removeObservers{
-    if (self._observersAdded){
-        [_player removeObserver:self forKeyPath:@"rate" context:nil];
-        [[_player currentItem] removeObserver:self forKeyPath:@"status" context:statusContext];
-        [[_player currentItem] removeObserver:self forKeyPath:@"presentationSize" context:presentationSizeContext];
-        [[_player currentItem] removeObserver:self
-                                   forKeyPath:@"loadedTimeRanges"
-                                      context:timeRangeContext];
-        [[_player currentItem] removeObserver:self
-                                   forKeyPath:@"duration"
-                                      context:nil];
-        [[_player currentItem] removeObserver:self
-                                   forKeyPath:@"playbackLikelyToKeepUp"
-                                      context:playbackLikelyToKeepUpContext];
-        [[_player currentItem] removeObserver:self
-                                   forKeyPath:@"playbackBufferEmpty"
-                                      context:playbackBufferEmptyContext];
-        [[_player currentItem] removeObserver:self
-                                   forKeyPath:@"playbackBufferFull"
-                                      context:playbackBufferFullContext];
-        [[NSNotificationCenter defaultCenter] removeObserver:self];
-        self._observersAdded = false;
+- (void)removeObservers {
+  if (self._observersAdded) {
+    [_player removeObserver:self forKeyPath:@"rate" context:nil];
+    [[_player currentItem] removeObserver:self
+                               forKeyPath:@"status"
+                                  context:statusContext];
+    [[_player currentItem] removeObserver:self
+                               forKeyPath:@"presentationSize"
+                                  context:presentationSizeContext];
+    [[_player currentItem] removeObserver:self
+                               forKeyPath:@"loadedTimeRanges"
+                                  context:timeRangeContext];
+    [[_player currentItem] removeObserver:self
+                               forKeyPath:@"duration"
+                                  context:nil];
+    [[_player currentItem] removeObserver:self
+                               forKeyPath:@"playbackLikelyToKeepUp"
+                                  context:playbackLikelyToKeepUpContext];
+    [[_player currentItem] removeObserver:self
+                               forKeyPath:@"playbackBufferEmpty"
+                                  context:playbackBufferEmptyContext];
+    [[_player currentItem] removeObserver:self
+                               forKeyPath:@"playbackBufferFull"
+                                  context:playbackBufferFullContext];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    self._observersAdded = false;
+  }
+}
+
+- (void)itemDidPlayToEndTime:(NSNotification *)notification {
+  if (_isLooping) {
+    AVPlayerItem *p = [notification object];
+    [p seekToTime:kCMTimeZero completionHandler:nil];
+  } else {
+    if (_eventSink) {
+      if (self.wasLiveStream) {
+        // Live stream played to end — EXT-X-ENDLIST was fully consumed
+        self.wasLiveStream = false;
+        NSLog(@"BetterPlayer iOS: Live stream ended (itemDidPlayToEndTime)");
+        _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
+      } else {
+        _eventSink(@{@"event" : @"completed", @"key" : _key});
+      }
+      [self removeObservers];
     }
+  }
 }
 
-- (void)itemDidPlayToEndTime:(NSNotification*)notification {
-    if (_isLooping) {
-        AVPlayerItem* p = [notification object];
-        [p seekToTime:kCMTimeZero completionHandler:nil];
-    } else {
-        if (_eventSink) {
-            if (self.wasLiveStream) {
-                // Live stream played to end — EXT-X-ENDLIST was fully consumed
-                self.wasLiveStream = false;
-                NSLog(@"BetterPlayer iOS: Live stream ended (itemDidPlayToEndTime)");
-                _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
-            } else {
-                _eventSink(@{@"event" : @"completed", @"key" : _key});
-            }
-            [self removeObservers];
-        }
-    }
+- (void)itemNewAccessLogEntry:(NSNotification *)notification {
+  AVPlayerItem *item = (AVPlayerItem *)notification.object;
+  AVPlayerItemAccessLogEvent *lastEvent = item.accessLog.events.lastObject;
 }
-
-- (void)itemNewAccessLogEntry:(NSNotification*)notification {
-    AVPlayerItem *item = (AVPlayerItem *)notification.object;
-    AVPlayerItemAccessLogEvent *lastEvent = item.accessLog.events.lastObject;
-    
-}
-
 
 static inline CGFloat radiansToDegrees(CGFloat radians) {
-    // Input range [-pi, pi] or [-180, 180]
-    CGFloat degrees = GLKMathRadiansToDegrees((float)radians);
-    if (degrees < 0) {
-        // Convert -90 to 270 and -180 to 180
-        return degrees + 360;
-    }
-    // Output degrees in between [0, 360[
-    return degrees;
+  // Input range [-pi, pi] or [-180, 180]
+  CGFloat degrees = GLKMathRadiansToDegrees((float)radians);
+  if (degrees < 0) {
+    // Convert -90 to 270 and -180 to 180
+    return degrees + 360;
+  }
+  // Output degrees in between [0, 360[
+  return degrees;
 };
 
-- (AVMutableVideoComposition*)getVideoCompositionWithTransform:(CGAffineTransform)transform
-                                                withVideoTrack:(AVAssetTrack*)videoTrack {
-    AVMutableVideoCompositionInstruction* instruction =
-    [AVMutableVideoCompositionInstruction videoCompositionInstruction];
-    instruction.timeRange = CMTimeRangeMake(kCMTimeZero, videoTrack.timeRange.duration);
-    AVMutableVideoCompositionLayerInstruction* layerInstruction =
-    [AVMutableVideoCompositionLayerInstruction
-     videoCompositionLayerInstructionWithAssetTrack:videoTrack];
-    [layerInstruction setTransform:_preferredTransform atTime:kCMTimeZero];
+- (AVMutableVideoComposition *)
+    getVideoCompositionWithTransform:(CGAffineTransform)transform
+                      withVideoTrack:(AVAssetTrack *)videoTrack {
+  AVMutableVideoCompositionInstruction *instruction =
+      [AVMutableVideoCompositionInstruction videoCompositionInstruction];
+  instruction.timeRange =
+      CMTimeRangeMake(kCMTimeZero, videoTrack.timeRange.duration);
+  AVMutableVideoCompositionLayerInstruction *layerInstruction =
+      [AVMutableVideoCompositionLayerInstruction
+          videoCompositionLayerInstructionWithAssetTrack:videoTrack];
+  [layerInstruction setTransform:_preferredTransform atTime:kCMTimeZero];
 
-    AVMutableVideoComposition* videoComposition = [AVMutableVideoComposition videoComposition];
-    instruction.layerInstructions = @[ layerInstruction ];
-    videoComposition.instructions = @[ instruction ];
+  AVMutableVideoComposition *videoComposition =
+      [AVMutableVideoComposition videoComposition];
+  instruction.layerInstructions = @[ layerInstruction ];
+  videoComposition.instructions = @[ instruction ];
 
-    // If in portrait mode, switch the width and height of the video
-    CGFloat width = videoTrack.naturalSize.width;
-    CGFloat height = videoTrack.naturalSize.height;
-    NSInteger rotationDegrees =
-    (NSInteger)round(radiansToDegrees(atan2(_preferredTransform.b, _preferredTransform.a)));
-    if (rotationDegrees == 90 || rotationDegrees == 270) {
-        width = videoTrack.naturalSize.height;
-        height = videoTrack.naturalSize.width;
-    }
-    videoComposition.renderSize = CGSizeMake(width, height);
+  // If in portrait mode, switch the width and height of the video
+  CGFloat width = videoTrack.naturalSize.width;
+  CGFloat height = videoTrack.naturalSize.height;
+  NSInteger rotationDegrees = (NSInteger)round(
+      radiansToDegrees(atan2(_preferredTransform.b, _preferredTransform.a)));
+  if (rotationDegrees == 90 || rotationDegrees == 270) {
+    width = videoTrack.naturalSize.height;
+    height = videoTrack.naturalSize.width;
+  }
+  videoComposition.renderSize = CGSizeMake(width, height);
 
-    float nominalFrameRate = videoTrack.nominalFrameRate;
-    int fps = 30;
-    if (nominalFrameRate > 0) {
-        fps = (int) ceil(nominalFrameRate);
-    }
-    videoComposition.frameDuration = CMTimeMake(1, fps);
-    
-    return videoComposition;
+  float nominalFrameRate = videoTrack.nominalFrameRate;
+  int fps = 30;
+  if (nominalFrameRate > 0) {
+    fps = (int)ceil(nominalFrameRate);
+  }
+  videoComposition.frameDuration = CMTimeMake(1, fps);
+
+  return videoComposition;
 }
 
-- (CGAffineTransform)fixTransform:(AVAssetTrack*)videoTrack {
+- (CGAffineTransform)fixTransform:(AVAssetTrack *)videoTrack {
   CGAffineTransform transform = videoTrack.preferredTransform;
-  // TODO(@recastrodiaz): why do we need to do this? Why is the preferredTransform incorrect?
-  // At least 2 user videos show a black screen when in portrait mode if we directly use the
-  // videoTrack.preferredTransform Setting tx to the height of the video instead of 0, properly
-  // displays the video https://github.com/flutter/flutter/issues/17606#issuecomment-413473181
-  NSInteger rotationDegrees = (NSInteger)round(radiansToDegrees(atan2(transform.b, transform.a)));
+  // TODO(@recastrodiaz): why do we need to do this? Why is the
+  // preferredTransform incorrect? At least 2 user videos show a black screen
+  // when in portrait mode if we directly use the videoTrack.preferredTransform
+  // Setting tx to the height of the video instead of 0, properly displays the
+  // video
+  // https://github.com/flutter/flutter/issues/17606#issuecomment-413473181
+  NSInteger rotationDegrees =
+      (NSInteger)round(radiansToDegrees(atan2(transform.b, transform.a)));
   if (rotationDegrees == 90) {
     transform.tx = videoTrack.naturalSize.height;
     transform.ty = 0;
@@ -370,490 +421,520 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   return transform;
 }
 
-- (void)setDataSourceAsset:(NSString*)asset withKey:(NSString*)key withCertificateUrl:(NSString*)certificateUrl withLicenseUrl:(NSString*)licenseUrl cacheKey:(NSString*)cacheKey cacheManager:(CacheManager*)cacheManager overriddenDuration:(int) overriddenDuration{
-    NSString* path = [[NSBundle mainBundle] pathForResource:asset ofType:nil];
-    return [self setDataSourceURL:[NSURL fileURLWithPath:path] withKey:key withCertificateUrl:certificateUrl withLicenseUrl:(NSString*)licenseUrl withHeaders: @{} withCache: false cacheKey:cacheKey cacheManager:cacheManager overriddenDuration:overriddenDuration videoExtension: nil];
+- (void)setDataSourceAsset:(NSString *)asset
+                   withKey:(NSString *)key
+        withCertificateUrl:(NSString *)certificateUrl
+            withLicenseUrl:(NSString *)licenseUrl
+                  cacheKey:(NSString *)cacheKey
+              cacheManager:(CacheManager *)cacheManager
+        overriddenDuration:(int)overriddenDuration {
+  NSString *path = [[NSBundle mainBundle] pathForResource:asset ofType:nil];
+  return [self setDataSourceURL:[NSURL fileURLWithPath:path]
+                        withKey:key
+             withCertificateUrl:certificateUrl
+                 withLicenseUrl:(NSString *)licenseUrl
+                    withHeaders:@{}
+                      withCache:false
+                       cacheKey:cacheKey
+                   cacheManager:cacheManager
+             overriddenDuration:overriddenDuration
+                 videoExtension:nil];
 }
 
-- (void)setDataSourceURL:(NSURL*)url withKey:(NSString*)key withCertificateUrl:(NSString*)certificateUrl withLicenseUrl:(NSString*)licenseUrl withHeaders:(NSDictionary*)headers withCache:(BOOL)useCache cacheKey:(NSString*)cacheKey cacheManager:(CacheManager*)cacheManager overriddenDuration:(int) overriddenDuration videoExtension: (NSString*) videoExtension{
-    _overriddenDuration = 0;
-    if (headers == [NSNull null] || headers == NULL){
-        headers = @{};
-    }
+- (void)setDataSourceURL:(NSURL *)url
+                 withKey:(NSString *)key
+      withCertificateUrl:(NSString *)certificateUrl
+          withLicenseUrl:(NSString *)licenseUrl
+             withHeaders:(NSDictionary *)headers
+               withCache:(BOOL)useCache
+                cacheKey:(NSString *)cacheKey
+            cacheManager:(CacheManager *)cacheManager
+      overriddenDuration:(int)overriddenDuration
+          videoExtension:(NSString *)videoExtension {
+  _overriddenDuration = 0;
+  if (headers == [NSNull null] || headers == NULL) {
+    headers = @{};
+  }
 
-    [self cancelRetry];
-    _failedCount = 0;
-    self.lastUrl = url;
-    self.lastCertificateUrl = certificateUrl != [NSNull null] ? certificateUrl : nil;
-    self.lastLicenseUrl = licenseUrl != [NSNull null] ? licenseUrl : nil;
-    self.lastHeaders = headers;
-    self.lastUseCache = useCache;
-    self.lastCacheKey = cacheKey != [NSNull null] ? cacheKey : nil;
-    self.lastCacheManager = cacheManager;
-    self.lastOverriddenDuration = overriddenDuration;
-    self.lastVideoExtension = videoExtension != [NSNull null] ? videoExtension : nil;
+  [self cancelRetry];
+  _failedCount = 0;
+  self.lastUrl = url;
+  self.lastCertificateUrl =
+      certificateUrl != [NSNull null] ? certificateUrl : nil;
+  self.lastLicenseUrl = licenseUrl != [NSNull null] ? licenseUrl : nil;
+  self.lastHeaders = headers;
+  self.lastUseCache = useCache;
+  self.lastCacheKey = cacheKey != [NSNull null] ? cacheKey : nil;
+  self.lastCacheManager = cacheManager;
+  self.lastOverriddenDuration = overriddenDuration;
+  self.lastVideoExtension =
+      videoExtension != [NSNull null] ? videoExtension : nil;
 
-    AVPlayerItem* item = [self buildPlayerItemWithURL:url
-                                  withCertificateUrl:certificateUrl
-                                      withLicenseUrl:licenseUrl
-                                         withHeaders:headers
-                                           withCache:useCache
-                                            cacheKey:cacheKey
-                                        cacheManager:cacheManager
-                                      videoExtension:videoExtension];
-
-    if (@available(iOS 10.0, *) && overriddenDuration > 0) {
-        _overriddenDuration = overriddenDuration;
-    }
-    return [self setDataSourcePlayerItem:item withKey:key];
+  [self buildPlayerItemWithURL:url
+            withCertificateUrl:certificateUrl
+                withLicenseUrl:licenseUrl
+                   withHeaders:headers
+                     withCache:useCache
+                      cacheKey:cacheKey
+                  cacheManager:cacheManager
+                videoExtension:videoExtension
+             completionHandler:^(AVPlayerItem *item) {
+               if (self->_disposed)
+                 return;
+               if (@available(iOS 10.0, *) && overriddenDuration > 0) {
+                 self->_overriddenDuration = overriddenDuration;
+               }
+               [self setDataSourcePlayerItem:item withKey:key];
+             }];
 }
 
-- (void)setDataSourcePlayerItem:(AVPlayerItem*)item withKey:(NSString*)key{
-    _key = key;
-    _stalledCount = 0;
-    _isStalledCheckStarted = false;
-    _playerRate = 1;
-    [_player replaceCurrentItemWithPlayerItem:item];
+- (void)setDataSourcePlayerItem:(AVPlayerItem *)item withKey:(NSString *)key {
+  _key = key;
+  _stalledCount = 0;
+  _isStalledCheckStarted = false;
+  _playerRate = 1;
+  [_player replaceCurrentItemWithPlayerItem:item];
 
-    AVAsset* asset = [item asset];
-    void (^assetCompletionHandler)(void) = ^{
-        if ([asset statusOfValueForKey:@"tracks" error:nil] == AVKeyValueStatusLoaded &&
-            [asset statusOfValueForKey:@"duration" error:nil] == AVKeyValueStatusLoaded) {
-            NSArray* tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
-            if ([tracks count] > 0) {
-                AVAssetTrack* videoTrack = tracks[0];
-                void (^trackCompletionHandler)(void) = ^{
-                    if (self->_disposed) return;
-                    if ([videoTrack statusOfValueForKey:@"preferredTransform"
-                                                  error:nil] == AVKeyValueStatusLoaded) {
-                        // Rotate the video by using a videoComposition and the preferredTransform
-                        self->_preferredTransform = [self fixTransform:videoTrack];
-                        // Note:
-                        // https://developer.apple.com/documentation/avfoundation/avplayeritem/1388818-videocomposition
-                        // Video composition can only be used with file-based media and is not supported for
-                        // use with media served using HTTP Live Streaming.
-                        AVMutableVideoComposition* videoComposition =
-                        [self getVideoCompositionWithTransform:self->_preferredTransform
-                                               withVideoTrack:videoTrack];
-                        item.videoComposition = videoComposition;
-                    }
-                };
-                [videoTrack loadValuesAsynchronouslyForKeys:@[ @"preferredTransform" ]
-                                          completionHandler:trackCompletionHandler];
-            }
-        }
-    };
-
-    [asset loadValuesAsynchronouslyForKeys:@[ @"tracks", @"duration" ] completionHandler:assetCompletionHandler];
-    [self addObservers:item];
-}
-
--(void)handleStalled {
-    if (_isStalledCheckStarted){
-        return;
-    }
-   _isStalledCheckStarted = true;
-    [self startStalledCheck];
-}
-
--(void)startStalledCheck{
-    if (_player.currentItem.playbackLikelyToKeepUp ||
-        [self availableDuration] - CMTimeGetSeconds(_player.currentItem.currentTime) > 10.0) {
-        [self play];
-    } else {
-        _stalledCount++;
-        if (_stalledCount > 15){
-            if ([self scheduleRetryWithMessage:@"playback stalled"]) {
-                _stalledCount = 0;
-                _isStalledCheckStarted = false;
-                return;
-            }
-            if (_eventSink != nil) {
-                _eventSink([FlutterError
-                        errorWithCode:@"VideoError"
-                        message:@"Failed to load video: playback stalled"
-                        details:nil]);
-            }
+  AVAsset *asset = [item asset];
+  void (^assetCompletionHandler)(void) = ^{
+    if ([asset statusOfValueForKey:@"tracks"
+                             error:nil] == AVKeyValueStatusLoaded &&
+        [asset statusOfValueForKey:@"duration"
+                             error:nil] == AVKeyValueStatusLoaded) {
+      NSArray *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+      if ([tracks count] > 0) {
+        AVAssetTrack *videoTrack = tracks[0];
+        void (^trackCompletionHandler)(void) = ^{
+          if (self->_disposed)
             return;
-        }
-        [self performSelector:@selector(startStalledCheck) withObject:nil afterDelay:1];
-
+          if ([videoTrack statusOfValueForKey:@"preferredTransform"
+                                        error:nil] == AVKeyValueStatusLoaded) {
+            // Rotate the video by using a videoComposition and the
+            // preferredTransform
+            self->_preferredTransform = [self fixTransform:videoTrack];
+            // Note:
+            // https://developer.apple.com/documentation/avfoundation/avplayeritem/1388818-videocomposition
+            // Video composition can only be used with file-based media and is
+            // not supported for use with media served using HTTP Live
+            // Streaming.
+            AVMutableVideoComposition *videoComposition =
+                [self getVideoCompositionWithTransform:self->_preferredTransform
+                                        withVideoTrack:videoTrack];
+            item.videoComposition = videoComposition;
+          }
+        };
+        [videoTrack loadValuesAsynchronouslyForKeys:@[ @"preferredTransform" ]
+                                  completionHandler:trackCompletionHandler];
+      }
     }
+  };
+
+  [asset loadValuesAsynchronouslyForKeys:@[ @"tracks", @"duration" ]
+                       completionHandler:assetCompletionHandler];
+  [self addObservers:item];
 }
 
-- (NSTimeInterval) availableDuration
-{
-    NSArray *loadedTimeRanges = [[_player currentItem] loadedTimeRanges];
-    if (loadedTimeRanges.count > 0){
-        CMTimeRange timeRange = [[loadedTimeRanges objectAtIndex:0] CMTimeRangeValue];
-        Float64 startSeconds = CMTimeGetSeconds(timeRange.start);
-        Float64 durationSeconds = CMTimeGetSeconds(timeRange.duration);
-        NSTimeInterval result = startSeconds + durationSeconds;
-        return result;
-    } else {
-        return 0;
-    }
-
+- (void)handleStalled {
+  if (_isStalledCheckStarted) {
+    return;
+  }
+  _isStalledCheckStarted = true;
+  [self startStalledCheck];
 }
 
-- (void)observeValueForKeyPath:(NSString*)path
+- (void)startStalledCheck {
+  if (_player.currentItem.playbackLikelyToKeepUp ||
+      [self availableDuration] -
+              CMTimeGetSeconds(_player.currentItem.currentTime) >
+          10.0) {
+    [self play];
+  } else {
+    _stalledCount++;
+    if (_stalledCount > 15) {
+      if ([self scheduleRetryWithMessage:@"playback stalled"]) {
+        _stalledCount = 0;
+        _isStalledCheckStarted = false;
+        return;
+      }
+      if (_eventSink != nil) {
+        _eventSink([FlutterError
+            errorWithCode:@"VideoError"
+                  message:@"Failed to load video: playback stalled"
+                  details:nil]);
+      }
+      return;
+    }
+    [self performSelector:@selector(startStalledCheck)
+               withObject:nil
+               afterDelay:1];
+  }
+}
+
+- (NSTimeInterval)availableDuration {
+  NSArray *loadedTimeRanges = [[_player currentItem] loadedTimeRanges];
+  if (loadedTimeRanges.count > 0) {
+    CMTimeRange timeRange =
+        [[loadedTimeRanges objectAtIndex:0] CMTimeRangeValue];
+    Float64 startSeconds = CMTimeGetSeconds(timeRange.start);
+    Float64 durationSeconds = CMTimeGetSeconds(timeRange.duration);
+    NSTimeInterval result = startSeconds + durationSeconds;
+    return result;
+  } else {
+    return 0;
+  }
+}
+
+- (void)observeValueForKeyPath:(NSString *)path
                       ofObject:(id)object
-                        change:(NSDictionary*)change
-                       context:(void*)context {
+                        change:(NSDictionary *)change
+                       context:(void *)context {
 
-    if ([path isEqualToString:@"rate"]) {
-        if (@available(iOS 10.0, *)) {
-            if (_pipController.pictureInPictureActive == true){
-                if (_lastAvPlayerTimeControlStatus != [NSNull null] && _lastAvPlayerTimeControlStatus == _player.timeControlStatus){
-                    return;
-                }
-
-                if (_player.timeControlStatus == AVPlayerTimeControlStatusPaused){
-                    _lastAvPlayerTimeControlStatus = _player.timeControlStatus;
-                    if (_eventSink != nil) {
-                      _eventSink(@{@"event" : @"pause"});
-                    }
-                    return;
-
-                }
-                if (_player.timeControlStatus == AVPlayerTimeControlStatusPlaying){
-                    _lastAvPlayerTimeControlStatus = _player.timeControlStatus;
-                    if (_eventSink != nil) {
-                      _eventSink(@{@"event" : @"play"});
-                    }
-                }
-            }
+  if ([path isEqualToString:@"rate"]) {
+    if (@available(iOS 10.0, *)) {
+      if (_pipController.pictureInPictureActive == true) {
+        if (_lastAvPlayerTimeControlStatus != [NSNull null] &&
+            _lastAvPlayerTimeControlStatus == _player.timeControlStatus) {
+          return;
         }
 
-        if (_player.rate > 0) {
-            [self cancelRetry];
-            _failedCount = 0;
+        if (_player.timeControlStatus == AVPlayerTimeControlStatusPaused) {
+          _lastAvPlayerTimeControlStatus = _player.timeControlStatus;
+          if (_eventSink != nil) {
+            _eventSink(@{@"event" : @"pause"});
+          }
+          return;
         }
-
-        if (_player.rate == 0 && //if player rate dropped to 0
-            CMTIME_COMPARE_INLINE(_player.currentItem.currentTime, >, kCMTimeZero) && //if video was started
-            CMTIME_COMPARE_INLINE(_player.currentItem.currentTime, <, _player.currentItem.duration) && //but not yet finished
-            _isPlaying) { //instance variable to handle overall state (changed to YES when user triggers playback)
-            [self handleStalled];
+        if (_player.timeControlStatus == AVPlayerTimeControlStatusPlaying) {
+          _lastAvPlayerTimeControlStatus = _player.timeControlStatus;
+          if (_eventSink != nil) {
+            _eventSink(@{@"event" : @"play"});
+          }
         }
+      }
     }
 
-    if (context == timeRangeContext) {
-        if (_eventSink != nil) {
-            NSMutableArray<NSArray<NSNumber*>*>* values = [[NSMutableArray alloc] init];
-            AVPlayerItem *currentItem = _player.currentItem;
-            CMTimeRange seekableRange;
-            BOOL hasSeekableRange =
-                [self isLiveStreamItem:currentItem] &&
-                [self getSeekableTimeRange:&seekableRange forItem:currentItem];
-            for (NSValue* rangeValue in [object loadedTimeRanges]) {
-                CMTimeRange range = [rangeValue CMTimeRangeValue];
-                int64_t start = [BetterPlayerTimeUtils FLTCMTimeToMillis:(range.start)];
-                int64_t end = start + [BetterPlayerTimeUtils FLTCMTimeToMillis:(range.duration)];
-                if (!CMTIME_IS_INVALID(_player.currentItem.forwardPlaybackEndTime)) {
-                    int64_t endTime = [BetterPlayerTimeUtils FLTCMTimeToMillis:(_player.currentItem.forwardPlaybackEndTime)];
-                    if (end > endTime){
-                        end = endTime;
-                    }
-                }
-
-                if (hasSeekableRange) {
-                    int64_t seekableStart =
-                        [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.start];
-                    int64_t seekableDuration =
-                        [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
-                    int64_t seekableEnd = seekableStart + seekableDuration;
-                    start = MAX(start, seekableStart);
-                    end = MIN(end, seekableEnd);
-                    start = MAX(0, start - seekableStart);
-                    end = MAX(0, end - seekableStart);
-                }
-
-                [values addObject:@[ @(start), @(end) ]];
-            }
-            _eventSink(@{@"event" : @"bufferingUpdate", @"values" : values, @"key" : _key});
-        }
-    }
-    else if (context == presentationSizeContext){
-        [self onReadyToPlay];
+    if (_player.rate > 0) {
+      [self cancelRetry];
+      _failedCount = 0;
     }
 
-    else if (context == statusContext) {
-        AVPlayerItem* item = (AVPlayerItem*)object;
-        switch (item.status) {
-            case AVPlayerItemStatusFailed:
-                NSLog(@"Failed to load video:");
-                NSLog(item.error.debugDescription);
-
-                if ([self scheduleRetryWithMessage:[item.error localizedDescription]]) {
-                    break;
-                }
-                if (_eventSink != nil) {
-                    _eventSink([FlutterError
-                                errorWithCode:@"VideoError"
-                                message:[@"Failed to load video: "
-                                         stringByAppendingString:[item.error localizedDescription]]
-                                details:nil]);
-                }
-                break;
-            case AVPlayerItemStatusUnknown:
-                break;
-            case AVPlayerItemStatusReadyToPlay:
-                [self onReadyToPlay];
-                break;
-        }
-    } else if (context == playbackLikelyToKeepUpContext) {
-        if ([[_player currentItem] isPlaybackLikelyToKeepUp]) {
-            [self cancelRetry];
-            _failedCount = 0;
-            [self updatePlayingState];
-            if (_eventSink != nil) {
-                _eventSink(@{@"event" : @"bufferingEnd", @"key" : _key});
-            }
-        }
-    } else if (context == playbackBufferEmptyContext) {
-        if (_eventSink != nil) {
-            _eventSink(@{@"event" : @"bufferingStart", @"key" : _key});
-        }
-    } else if (context == playbackBufferFullContext) {
-        if (_eventSink != nil) {
-            _eventSink(@{@"event" : @"bufferingEnd", @"key" : _key});
-        }
-    } else if ([path isEqualToString:@"duration"]) {
-        // Detect live→VOD transition: duration changes from kCMTimeIndefinite to finite
-        CMTime currentDuration = _player.currentItem.duration;
-        if (CMTIME_IS_INDEFINITE(currentDuration)) {
-            // Stream is live — mark it
-            self.wasLiveStream = true;
-        } else if (self.wasLiveStream && CMTIME_IS_NUMERIC(currentDuration) && CMTimeGetSeconds(currentDuration) > 0) {
-            // Was live, now has a real duration — EXT-X-ENDLIST was received
-            self.wasLiveStream = false;
-            NSLog(@"BetterPlayer iOS: Live stream ended (duration KVO transition)");
-            if (_eventSink != nil) {
-                _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
-            }
-        }
+    if (_player.rate == 0 && // if player rate dropped to 0
+        CMTIME_COMPARE_INLINE(_player.currentItem.currentTime, >,
+                              kCMTimeZero) && // if video was started
+        CMTIME_COMPARE_INLINE(
+            _player.currentItem.currentTime, <,
+            _player.currentItem.duration) && // but not yet finished
+        _isPlaying) { // instance variable to handle overall state (changed to
+                      // YES when user triggers playback)
+      [self handleStalled];
     }
+  }
+
+  if (context == timeRangeContext) {
+    if (_eventSink != nil) {
+      NSMutableArray<NSArray<NSNumber *> *> *values =
+          [[NSMutableArray alloc] init];
+      AVPlayerItem *currentItem = _player.currentItem;
+      CMTimeRange seekableRange;
+      BOOL hasSeekableRange = [self isLiveStreamItem:currentItem] &&
+                              [self getSeekableTimeRange:&seekableRange
+                                                 forItem:currentItem];
+      for (NSValue *rangeValue in [object loadedTimeRanges]) {
+        CMTimeRange range = [rangeValue CMTimeRangeValue];
+        int64_t start = [BetterPlayerTimeUtils FLTCMTimeToMillis:(range.start)];
+        int64_t end =
+            start + [BetterPlayerTimeUtils FLTCMTimeToMillis:(range.duration)];
+        if (!CMTIME_IS_INVALID(_player.currentItem.forwardPlaybackEndTime)) {
+          int64_t endTime = [BetterPlayerTimeUtils
+              FLTCMTimeToMillis:(_player.currentItem.forwardPlaybackEndTime)];
+          if (end > endTime) {
+            end = endTime;
+          }
+        }
+
+        if (hasSeekableRange) {
+          int64_t seekableStart =
+              [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.start];
+          int64_t seekableDuration =
+              [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+          int64_t seekableEnd = seekableStart + seekableDuration;
+          start = MAX(start, seekableStart);
+          end = MIN(end, seekableEnd);
+          start = MAX(0, start - seekableStart);
+          end = MAX(0, end - seekableStart);
+        }
+
+        [values addObject:@[ @(start), @(end) ]];
+      }
+      _eventSink(
+          @{@"event" : @"bufferingUpdate", @"values" : values, @"key" : _key});
+    }
+  } else if (context == presentationSizeContext) {
+    [self onReadyToPlay];
+  }
+
+  else if (context == statusContext) {
+    AVPlayerItem *item = (AVPlayerItem *)object;
+    switch (item.status) {
+    case AVPlayerItemStatusFailed:
+      NSLog(@"Failed to load video:");
+      NSLog(item.error.debugDescription);
+
+      if ([self scheduleRetryWithMessage:[item.error localizedDescription]]) {
+        break;
+      }
+      if (_eventSink != nil) {
+        _eventSink([FlutterError
+            errorWithCode:@"VideoError"
+                  message:[@"Failed to load video: "
+                              stringByAppendingString:
+                                  [item.error localizedDescription]]
+                  details:nil]);
+      }
+      break;
+    case AVPlayerItemStatusUnknown:
+      break;
+    case AVPlayerItemStatusReadyToPlay:
+      [self onReadyToPlay];
+      break;
+    }
+  } else if (context == playbackLikelyToKeepUpContext) {
+    if ([[_player currentItem] isPlaybackLikelyToKeepUp]) {
+      [self cancelRetry];
+      _failedCount = 0;
+      [self updatePlayingState];
+      if (_eventSink != nil) {
+        _eventSink(@{@"event" : @"bufferingEnd", @"key" : _key});
+      }
+    }
+  } else if (context == playbackBufferEmptyContext) {
+    if (_eventSink != nil) {
+      _eventSink(@{@"event" : @"bufferingStart", @"key" : _key});
+    }
+  } else if (context == playbackBufferFullContext) {
+    if (_eventSink != nil) {
+      _eventSink(@{@"event" : @"bufferingEnd", @"key" : _key});
+    }
+  } else if ([path isEqualToString:@"duration"]) {
+    // Detect live→VOD transition: duration changes from kCMTimeIndefinite to
+    // finite
+    CMTime currentDuration = _player.currentItem.duration;
+    if (CMTIME_IS_INDEFINITE(currentDuration)) {
+      // Stream is live — mark it
+      self.wasLiveStream = true;
+    } else if (self.wasLiveStream && CMTIME_IS_NUMERIC(currentDuration) &&
+               CMTimeGetSeconds(currentDuration) > 0) {
+      // Was live, now has a real duration — EXT-X-ENDLIST was received
+      self.wasLiveStream = false;
+      NSLog(@"BetterPlayer iOS: Live stream ended (duration KVO transition)");
+      if (_eventSink != nil) {
+        _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
+      }
+    }
+  }
 }
 
 - (void)updatePlayingState {
-    if (!_isInitialized || !_key) {
-        return;
-    }
-    if (!self._observersAdded){
-        [self addObservers:[_player currentItem]];
-    }
+  if (!_isInitialized || !_key) {
+    return;
+  }
+  if (!self._observersAdded) {
+    [self addObservers:[_player currentItem]];
+  }
 
-    if (_isPlaying) {
-        if (@available(iOS 10.0, *)) {
-            [_player playImmediatelyAtRate:1.0];
-            _player.rate = _playerRate;
-        } else {
-            [_player play];
-            _player.rate = _playerRate;
-        }
+  if (_isPlaying) {
+    if (@available(iOS 10.0, *)) {
+      [_player playImmediatelyAtRate:1.0];
+      _player.rate = _playerRate;
     } else {
-        [_player pause];
+      [_player play];
+      _player.rate = _playerRate;
     }
+  } else {
+    [_player pause];
+  }
 }
 
 - (void)onReadyToPlay {
-    if (_eventSink && !_isInitialized && _key) {
-        if (!_player.currentItem) {
-            return;
-        }
-        if (_player.status != AVPlayerStatusReadyToPlay) {
-            return;
-        }
-
-        CGSize size = [_player currentItem].presentationSize;
-        CGFloat width = size.width;
-        CGFloat height = size.height;
-
-
-        AVAsset *asset = _player.currentItem.asset;
-        bool onlyAudio =  [[asset tracksWithMediaType:AVMediaTypeVideo] count] == 0;
-
-        // The player has not yet initialized.
-        if (!onlyAudio && height == CGSizeZero.height && width == CGSizeZero.width) {
-            return;
-        }
-        const BOOL isLive = CMTIME_IS_INDEFINITE([_player currentItem].duration);
-        // The player may be initialized but still needs to determine the duration.
-        if (isLive == false && [self duration] == 0) {
-            return;
-        }
-
-        // Track live stream state
-        if (isLive) {
-            self.wasLiveStream = true;
-        } else if (self.wasLiveStream && _isInitialized) {
-            // Was live, now has a finite duration — EXT-X-ENDLIST received
-            self.wasLiveStream = false;
-            NSLog(@"BetterPlayer iOS: Live stream ended (EXT-X-ENDLIST detected)");
-            if (_eventSink) {
-                _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
-            }
-        }
-
-        //Fix from https://github.com/flutter/flutter/issues/66413
-        AVPlayerItemTrack *track = [self.player currentItem].tracks.firstObject;
-        CGSize naturalSize = track.assetTrack.naturalSize;
-        CGAffineTransform prefTrans = track.assetTrack.preferredTransform;
-        CGSize realSize = CGSizeApplyAffineTransform(naturalSize, prefTrans);
-
-        int64_t duration = [self duration];
-        if (_overriddenDuration > 0 && duration > _overriddenDuration){
-            _player.currentItem.forwardPlaybackEndTime = CMTimeMake(_overriddenDuration/1000, 1);
-        }
-
-        _isInitialized = true;
-        [self updatePlayingState];
-        _eventSink(@{
-            @"event" : @"initialized",
-            @"duration" : @([self duration]),
-            @"width" : @(fabs(realSize.width) ? : width),
-            @"height" : @(fabs(realSize.height) ? : height),
-            @"key" : _key
-        });
+  if (_eventSink && !_isInitialized && _key) {
+    if (!_player.currentItem) {
+      return;
     }
+    if (_player.status != AVPlayerStatusReadyToPlay) {
+      return;
+    }
+
+    CGSize size = [_player currentItem].presentationSize;
+    CGFloat width = size.width;
+    CGFloat height = size.height;
+
+    AVAsset *asset = _player.currentItem.asset;
+    bool onlyAudio = [[asset tracksWithMediaType:AVMediaTypeVideo] count] == 0;
+
+    // The player has not yet initialized.
+    if (!onlyAudio && height == CGSizeZero.height &&
+        width == CGSizeZero.width) {
+      return;
+    }
+    const BOOL isLive = CMTIME_IS_INDEFINITE([_player currentItem].duration);
+    // The player may be initialized but still needs to determine the duration.
+    if (isLive == false && [self duration] == 0) {
+      return;
+    }
+
+    // Track live stream state
+    if (isLive) {
+      self.wasLiveStream = true;
+    } else if (self.wasLiveStream && _isInitialized) {
+      // Was live, now has a finite duration — EXT-X-ENDLIST received
+      self.wasLiveStream = false;
+      NSLog(@"BetterPlayer iOS: Live stream ended (EXT-X-ENDLIST detected)");
+      if (_eventSink) {
+        _eventSink(@{@"event" : @"liveStreamEnded", @"key" : _key});
+      }
+    }
+
+    // Fix from https://github.com/flutter/flutter/issues/66413
+    AVPlayerItemTrack *track = [self.player currentItem].tracks.firstObject;
+    CGSize naturalSize = track.assetTrack.naturalSize;
+    CGAffineTransform prefTrans = track.assetTrack.preferredTransform;
+    CGSize realSize = CGSizeApplyAffineTransform(naturalSize, prefTrans);
+
+    int64_t duration = [self duration];
+    if (_overriddenDuration > 0 && duration > _overriddenDuration) {
+      _player.currentItem.forwardPlaybackEndTime =
+          CMTimeMake(_overriddenDuration / 1000, 1);
+    }
+
+    _isInitialized = true;
+    [self updatePlayingState];
+    _eventSink(@{
+      @"event" : @"initialized",
+      @"duration" : @([self duration]),
+      @"width" : @(fabs(realSize.width) ?: width),
+      @"height" : @(fabs(realSize.height) ?: height),
+      @"key" : _key
+    });
+  }
 }
 
 - (void)play {
-    _stalledCount = 0;
-    _isStalledCheckStarted = false;
-    _isPlaying = true;
-    [self updatePlayingState];
+  _stalledCount = 0;
+  _isStalledCheckStarted = false;
+  _isPlaying = true;
+  [self updatePlayingState];
 }
 
 - (void)pause {
-    _isPlaying = false;
-    [self updatePlayingState];
+  _isPlaying = false;
+  [self updatePlayingState];
 }
 
 - (int64_t)position {
-    AVPlayerItem *currentItem = _player.currentItem;
-    if ([self isLiveStreamItem:currentItem]) {
-        CMTimeRange seekableRange;
-        if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
-            CMTime relativeTime =
-                CMTimeSubtract(_player.currentTime, seekableRange.start);
-            int64_t positionMs =
-                [BetterPlayerTimeUtils FLTCMTimeToMillis:relativeTime];
-            int64_t durationMs =
-                [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
-            return MAX(0, MIN(positionMs, durationMs));
-        }
+  AVPlayerItem *currentItem = _player.currentItem;
+  if ([self isLiveStreamItem:currentItem]) {
+    CMTimeRange seekableRange;
+    if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
+      CMTime relativeTime =
+          CMTimeSubtract(_player.currentTime, seekableRange.start);
+      int64_t positionMs =
+          [BetterPlayerTimeUtils FLTCMTimeToMillis:relativeTime];
+      int64_t durationMs =
+          [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+      return MAX(0, MIN(positionMs, durationMs));
     }
-    return [BetterPlayerTimeUtils FLTCMTimeToMillis:([_player currentTime])];
+  }
+  return [BetterPlayerTimeUtils FLTCMTimeToMillis:([_player currentTime])];
 }
 
 - (int64_t)absolutePosition {
-    return [BetterPlayerTimeUtils FLTNSTimeIntervalToMillis:([[[_player currentItem] currentDate] timeIntervalSince1970])];
+  return [BetterPlayerTimeUtils
+      FLTNSTimeIntervalToMillis:([[[_player currentItem] currentDate]
+                                    timeIntervalSince1970])];
 }
 
 - (int64_t)duration {
-    AVPlayerItem *currentItem = _player.currentItem;
-    if ([self isLiveStreamItem:currentItem]) {
-        CMTimeRange seekableRange;
-        if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
-            return [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
-        }
+  AVPlayerItem *currentItem = _player.currentItem;
+  if ([self isLiveStreamItem:currentItem]) {
+    CMTimeRange seekableRange;
+    if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
+      return [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
     }
+  }
 
-    CMTime time;
-    time =  [[_player currentItem] duration];
-    if (!CMTIME_IS_INVALID(_player.currentItem.forwardPlaybackEndTime)) {
-        time = [[_player currentItem] forwardPlaybackEndTime];
-    }
+  CMTime time;
+  time = [[_player currentItem] duration];
+  if (!CMTIME_IS_INVALID(_player.currentItem.forwardPlaybackEndTime)) {
+    time = [[_player currentItem] forwardPlaybackEndTime];
+  }
 
-    return [BetterPlayerTimeUtils FLTCMTimeToMillis:(time)];
+  return [BetterPlayerTimeUtils FLTCMTimeToMillis:(time)];
 }
 
 - (void)seekToLive {
-    AVPlayerItem *currentItem = _player.currentItem;
-    if (currentItem && currentItem.seekableTimeRanges.count > 0) {
-        CMTimeRange seekableRange = [currentItem.seekableTimeRanges.lastObject CMTimeRangeValue];
-        CMTime liveEdge = CMTimeAdd(seekableRange.start, seekableRange.duration);
-        int64_t seekableDurationMs =
-            [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
-        if (seekableDurationMs > 500) {
-            liveEdge = CMTimeSubtract(liveEdge, CMTimeMake(500, 1000));
-        }
-        
-        bool wasPlaying = _isPlaying;
-        [_player seekToTime:liveEdge
-            toleranceBefore:kCMTimeZero
-             toleranceAfter:kCMTimeZero
-          completionHandler:^(BOOL finished){
-            if (finished && wasPlaying){
-                 [_player play];
-            }
-        }];
+  AVPlayerItem *currentItem = _player.currentItem;
+  if (currentItem && currentItem.seekableTimeRanges.count > 0) {
+    CMTimeRange seekableRange =
+        [currentItem.seekableTimeRanges.lastObject CMTimeRangeValue];
+    CMTime liveEdge = CMTimeAdd(seekableRange.start, seekableRange.duration);
+    int64_t seekableDurationMs =
+        [BetterPlayerTimeUtils FLTCMTimeToMillis:seekableRange.duration];
+    if (seekableDurationMs > 500) {
+      liveEdge = CMTimeSubtract(liveEdge, CMTimeMake(500, 1000));
     }
+
+    bool wasPlaying = _isPlaying;
+    [_player seekToTime:liveEdge
+          toleranceBefore:kCMTimeZero
+           toleranceAfter:kCMTimeZero
+        completionHandler:^(BOOL finished) {
+          if (finished && wasPlaying) {
+            [_player play];
+          }
+        }];
+  }
 }
 
 - (void)seekTo:(int)location {
-    NSLog(@"Player rate before seek: %f", _player.rate);
-    ///When player is playing, pause video, seek to new position and start again. This will prevent issues with seekbar jumps.
-    bool wasPlaying = _isPlaying;
-    CMTime targetTime = CMTimeMake(location, 1000);
-    AVPlayerItem *currentItem = _player.currentItem;
-    if ([self isLiveStreamItem:currentItem]) {
-        CMTimeRange seekableRange;
-        if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
-            targetTime = [self liveWindowSeekTimeForLocation:location
-                                               seekableRange:seekableRange];
-        }
+  if (self.isSeeking) {
+    
+    return;
+  }
+
+  self.isSeeking = YES;
+
+
+  CMTime targetTime = CMTimeMake(location, 1000);
+  AVPlayerItem *currentItem = _player.currentItem;
+
+  if ([self isLiveStreamItem:currentItem]) {
+    CMTimeRange seekableRange;
+    if ([self getSeekableTimeRange:&seekableRange forItem:currentItem]) {
+      targetTime = [self liveWindowSeekTimeForLocation:location
+                                         seekableRange:seekableRange];
     }
-    // if (wasPlaying){
-    //     [_player pause];
-    // }
+  }
 
-    [_player seekToTime:targetTime
-        toleranceBefore:kCMTimeZero
-         toleranceAfter:kCMTimeZero
-      completionHandler:^(BOOL finished){
+  // Use a slight tolerance to allow AVPlayer to snap to keyframes faster
+  // for HLS, which eliminates UI freezing.
+  CMTime tolerance = kCMTimePositiveInfinity;
 
-        if (finished && wasPlaying){   
-         NSLog(@"Player rate =====> playing: %f", _playerRate);       
-            // _player.rate = _playerRate;
-             [_player play];
-        }
+  [_player seekToTime:targetTime
+      toleranceBefore:tolerance
+       toleranceAfter:tolerance
+    completionHandler:^(BOOL finished) {
+      self.isSeeking = NO;
+   
     }];
-
-    NSLog(@"Player rate after seek: %f", _player.rate);
 }
 
-// - (void)seekTo:(int)location {
-//     // Save current rate before pausing
-//     float currentRate = _player.rate;
-//     _playerRate = currentRate > 0 ? currentRate : _playerRate;
-    
-//     // When player is playing, pause video, seek to new position and start again
-//     bool wasPlaying = _isPlaying;
-//     if (wasPlaying) {
-//         [_player pause];
-//     }
-
-//     [_player seekToTime:CMTimeMake(location, 1000)
-//         toleranceBefore:kCMTimeZero
-//          toleranceAfter:kCMTimeZero
-//       completionHandler:^(BOOL finished) {
-//         if (wasPlaying) {
-//             _player.rate = _playerRate;
-//         }
-//         NSLog(@"Player rate after seek: %f", _player.rate);
-//     }];
-//     NSLog(@"Player rate before seek completion: %f", _playerRate);
-// }
-
 - (void)setIsLooping:(bool)isLooping {
-    _isLooping = isLooping;
+  _isLooping = isLooping;
 }
 
 - (void)setVolume:(double)volume {
-    _player.volume = (float)((volume < 0.0) ? 0.0 : ((volume > 1.0) ? 1.0 : volume));
+  _player.volume =
+      (float)((volume < 0.0) ? 0.0 : ((volume > 1.0) ? 1.0 : volume));
 }
 
 // - (void)setSpeed:(double)speed result:(FlutterResult)result {
@@ -873,8 +954,8 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 //     } else {
 //         if (speed <= 1.0) {
 //             result([FlutterError errorWithCode:@"unsupported_slow_forward"
-//                                        message:@"This video cannot be played slow forward"
-//                                        details:nil]);
+//                                        message:@"This video cannot be played
+//                                        slow forward" details:nil]);
 //         }
 //     }
 
@@ -889,224 +970,241 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 // }
 
 - (void)setSpeed:(double)speed result:(FlutterResult)result {
-    NSLog(@"[BetterPlayer] setSpeed before: %f", speed);
-NSLog(@"[BetterPlayer] _playerRate before set to: %f", _playerRate);
-    if (speed == 1.0 || speed == 0.0) {
-        _playerRate = 1;
-        result(nil);
-    } else if (speed < 0 || speed > 2.0) {
-        result([FlutterError errorWithCode:@"unsupported_speed"
-                                   message:@"Speed must be >= 0.0 and <= 2.0"
-                                   details:nil]);
-    } else if ((speed > 1.0 ) ||
-               (speed < 1.0 )) {
-        _playerRate = speed;
-        result(nil);
+  NSLog(@"[BetterPlayer] setSpeed before: %f", speed);
+  NSLog(@"[BetterPlayer] _playerRate before set to: %f", _playerRate);
+  if (speed == 1.0 || speed == 0.0) {
+    _playerRate = 1;
+    result(nil);
+  } else if (speed < 0 || speed > 2.0) {
+    result([FlutterError errorWithCode:@"unsupported_speed"
+                               message:@"Speed must be >= 0.0 and <= 2.0"
+                               details:nil]);
+  } else if ((speed > 1.0) || (speed < 1.0)) {
+    _playerRate = speed;
+    result(nil);
+  } else {
+    if (speed <= 1.0) {
+      result([FlutterError
+          errorWithCode:@"unsupported_slow_forward"
+                message:@"This video cannot be played slow forward"
+                details:nil]);
+    }
+  }
+
+  if (_isPlaying) {
+    if (@available(iOS 16, *)) {
+      _player.defaultRate = speed;
+    }
+    _player.rate = speed;
+  }
+  NSLog(@"[BetterPlayer] _playerRate after set to: %f", _playerRate);
+  NSLog(@"[BetterPlayer] _playerRate after set to: %f", _playerRate);
+}
+
+- (void)setTrackParameters:(int)width:(int)height:(int)bitrate {
+  _player.currentItem.preferredPeakBitRate = bitrate;
+  if (@available(iOS 11.0, *)) {
+    if (width == 0 && height == 0) {
+      _player.currentItem.preferredMaximumResolution = CGSizeZero;
     } else {
-        if (speed <= 1.0) {
-            result([FlutterError errorWithCode:@"unsupported_slow_forward"
-                                       message:@"This video cannot be played slow forward"
-                                       details:nil]);
-        }
+      _player.currentItem.preferredMaximumResolution =
+          CGSizeMake(width, height);
     }
-
-    if (_isPlaying){
-        if (@available(iOS 16, *)) {
-            _player.defaultRate = speed;
-        }
-        _player.rate = speed;
-    }
-    NSLog(@"[BetterPlayer] _playerRate after set to: %f", _playerRate);
-    NSLog(@"[BetterPlayer] _playerRate after set to: %f", _playerRate);
+  }
 }
 
-
-- (void)setTrackParameters:(int) width: (int) height: (int)bitrate {
-    _player.currentItem.preferredPeakBitRate = bitrate;
-    if (@available(iOS 11.0, *)) {
-        if (width == 0 && height == 0){
-            _player.currentItem.preferredMaximumResolution = CGSizeZero;
-        } else {
-            _player.currentItem.preferredMaximumResolution = CGSizeMake(width, height);
-        }
+- (void)setPictureInPicture:(BOOL)pictureInPicture {
+  self._pictureInPicture = pictureInPicture;
+  if (@available(iOS 9.0, *)) {
+    if (_pipController && self._pictureInPicture &&
+        ![_pipController isPictureInPictureActive]) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [_pipController startPictureInPicture];
+      });
+    } else if (_pipController && !self._pictureInPicture &&
+               [_pipController isPictureInPictureActive]) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [_pipController stopPictureInPicture];
+      });
+    } else {
+      // Fallback on earlier versions
     }
-}
-
-- (void)setPictureInPicture:(BOOL)pictureInPicture
-{
-    self._pictureInPicture = pictureInPicture;
-    if (@available(iOS 9.0, *)) {
-        if (_pipController && self._pictureInPicture && ![_pipController isPictureInPictureActive]) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [_pipController startPictureInPicture];
-            });
-        } else if (_pipController && !self._pictureInPicture && [_pipController isPictureInPictureActive]) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [_pipController stopPictureInPicture];
-            });
-        } else {
-            // Fallback on earlier versions
-        } }
+  }
 }
 
 #if TARGET_OS_IOS
-- (void)setRestoreUserInterfaceForPIPStopCompletionHandler:(BOOL)restore
-{
-    if (_restoreUserInterfaceForPIPStopCompletionHandler != NULL) {
-        _restoreUserInterfaceForPIPStopCompletionHandler(restore);
-        _restoreUserInterfaceForPIPStopCompletionHandler = NULL;
-    }
+- (void)setRestoreUserInterfaceForPIPStopCompletionHandler:(BOOL)restore {
+  if (_restoreUserInterfaceForPIPStopCompletionHandler != NULL) {
+    _restoreUserInterfaceForPIPStopCompletionHandler(restore);
+    _restoreUserInterfaceForPIPStopCompletionHandler = NULL;
+  }
 }
 
 - (void)setupPipController {
+  if (@available(iOS 9.0, *)) {
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
+    [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
+    if (!_pipController && self._playerLayer &&
+        [AVPictureInPictureController isPictureInPictureSupported]) {
+      _pipController = [[AVPictureInPictureController alloc]
+          initWithPlayerLayer:self._playerLayer];
+      _pipController.delegate = self;
+    }
+  } else {
+    // Fallback on earlier versions
+  }
+}
+
+- (void)enablePictureInPicture:(CGRect)frame {
+  [self disablePictureInPicture];
+  [self usePlayerLayer:frame];
+}
+
+- (void)usePlayerLayer:(CGRect)frame {
+  if (_player) {
+    // Create new controller passing reference to the AVPlayerLayer
+    self._playerLayer = [AVPlayerLayer playerLayerWithPlayer:_player];
+    UIViewController *vc =
+        [[[UIApplication sharedApplication] keyWindow] rootViewController];
+    self._playerLayer.frame = frame;
+    self._playerLayer.needsDisplayOnBoundsChange = YES;
+    //  [self._playerLayer addObserver:self forKeyPath:readyForDisplayKeyPath
+    //  options:NSKeyValueObservingOptionNew context:nil];
+    [vc.view.layer addSublayer:self._playerLayer];
+    vc.view.layer.needsDisplayOnBoundsChange = YES;
     if (@available(iOS 9.0, *)) {
-        [[AVAudioSession sharedInstance] setActive: YES error: nil];
-        [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
-        if (!_pipController && self._playerLayer && [AVPictureInPictureController isPictureInPictureSupported]) {
-            _pipController = [[AVPictureInPictureController alloc] initWithPlayerLayer:self._playerLayer];
-            _pipController.delegate = self;
-        }
-    } else {
-        // Fallback on earlier versions
+      _pipController = NULL;
     }
-}
-
-- (void) enablePictureInPicture: (CGRect) frame{
-    [self disablePictureInPicture];
-    [self usePlayerLayer:frame];
-}
-
-- (void)usePlayerLayer: (CGRect) frame
-{
-    if( _player )
-    {
-        // Create new controller passing reference to the AVPlayerLayer
-        self._playerLayer = [AVPlayerLayer playerLayerWithPlayer:_player];
-        UIViewController* vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
-        self._playerLayer.frame = frame;
-        self._playerLayer.needsDisplayOnBoundsChange = YES;
-        //  [self._playerLayer addObserver:self forKeyPath:readyForDisplayKeyPath options:NSKeyValueObservingOptionNew context:nil];
-        [vc.view.layer addSublayer:self._playerLayer];
-        vc.view.layer.needsDisplayOnBoundsChange = YES;
-        if (@available(iOS 9.0, *)) {
-            _pipController = NULL;
-        }
-        [self setupPipController];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [self setPictureInPicture:true];
+    [self setupPipController];
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          [self setPictureInPicture:true];
         });
-    }
+  }
 }
 
-- (void)disablePictureInPicture
-{
-    [self setPictureInPicture:true];
-    if (__playerLayer){
-        [self._playerLayer removeFromSuperlayer];
-        self._playerLayer = nil;
-        if (_eventSink != nil) {
-            _eventSink(@{@"event" : @"pipStop"});
-        }
+- (void)disablePictureInPicture {
+  [self setPictureInPicture:true];
+  if (__playerLayer) {
+    [self._playerLayer removeFromSuperlayer];
+    self._playerLayer = nil;
+    if (_eventSink != nil) {
+      _eventSink(@{@"event" : @"pipStop"});
     }
+  }
 }
 #endif
 
 #if TARGET_OS_IOS
-- (void)pictureInPictureControllerDidStopPictureInPicture:(AVPictureInPictureController *)pictureInPictureController  API_AVAILABLE(ios(9.0)){
-    [self disablePictureInPicture];
+- (void)pictureInPictureControllerDidStopPictureInPicture:
+    (AVPictureInPictureController *)pictureInPictureController
+    API_AVAILABLE(ios(9.0)) {
+  [self disablePictureInPicture];
 }
 
-- (void)pictureInPictureControllerDidStartPictureInPicture:(AVPictureInPictureController *)pictureInPictureController  API_AVAILABLE(ios(9.0)){
-    if (_eventSink != nil) {
-        _eventSink(@{@"event" : @"pipStart"});
+- (void)pictureInPictureControllerDidStartPictureInPicture:
+    (AVPictureInPictureController *)pictureInPictureController
+    API_AVAILABLE(ios(9.0)) {
+  if (_eventSink != nil) {
+    _eventSink(@{@"event" : @"pipStart"});
+  }
+}
+
+- (void)pictureInPictureControllerWillStopPictureInPicture:
+    (AVPictureInPictureController *)pictureInPictureController
+    API_AVAILABLE(ios(9.0)) {
+}
+
+- (void)pictureInPictureControllerWillStartPictureInPicture:
+    (AVPictureInPictureController *)pictureInPictureController {
+}
+
+- (void)pictureInPictureController:
+            (AVPictureInPictureController *)pictureInPictureController
+    failedToStartPictureInPictureWithError:(NSError *)error {
+}
+
+- (void)pictureInPictureController:
+            (AVPictureInPictureController *)pictureInPictureController
+    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler:
+        (void (^)(BOOL))completionHandler {
+  [self setRestoreUserInterfaceForPIPStopCompletionHandler:true];
+}
+
+- (void)setAudioTrack:(NSString *)name index:(int)index {
+  AVMediaSelectionGroup *audioSelectionGroup = [[[_player currentItem] asset]
+      mediaSelectionGroupForMediaCharacteristic:AVMediaCharacteristicAudible];
+  NSArray *options = audioSelectionGroup.options;
+
+  for (int audioTrackIndex = 0; audioTrackIndex < [options count];
+       audioTrackIndex++) {
+    AVMediaSelectionOption *option = [options objectAtIndex:audioTrackIndex];
+    NSArray *metaDatas =
+        [AVMetadataItem metadataItemsFromArray:option.commonMetadata
+                                       withKey:@"title"
+                                      keySpace:@"comn"];
+    if (metaDatas.count > 0) {
+      NSString *title =
+          ((AVMetadataItem *)[metaDatas objectAtIndex:0]).stringValue;
+      if ([name compare:title] == NSOrderedSame && audioTrackIndex == index) {
+        [[_player currentItem] selectMediaOption:option
+                           inMediaSelectionGroup:audioSelectionGroup];
+      }
     }
-}
-
-- (void)pictureInPictureControllerWillStopPictureInPicture:(AVPictureInPictureController *)pictureInPictureController  API_AVAILABLE(ios(9.0)){
-
-}
-
-- (void)pictureInPictureControllerWillStartPictureInPicture:(AVPictureInPictureController *)pictureInPictureController {
-
-}
-
-- (void)pictureInPictureController:(AVPictureInPictureController *)pictureInPictureController failedToStartPictureInPictureWithError:(NSError *)error {
-
-}
-
-- (void)pictureInPictureController:(AVPictureInPictureController *)pictureInPictureController restoreUserInterfaceForPictureInPictureStopWithCompletionHandler:(void (^)(BOOL))completionHandler {
-    [self setRestoreUserInterfaceForPIPStopCompletionHandler: true];
-}
-
-- (void) setAudioTrack:(NSString*) name index:(int) index{
-    AVMediaSelectionGroup *audioSelectionGroup = [[[_player currentItem] asset] mediaSelectionGroupForMediaCharacteristic: AVMediaCharacteristicAudible];
-    NSArray* options = audioSelectionGroup.options;
-
-
-    for (int audioTrackIndex = 0; audioTrackIndex < [options count]; audioTrackIndex++) {
-        AVMediaSelectionOption* option = [options objectAtIndex:audioTrackIndex];
-        NSArray *metaDatas = [AVMetadataItem metadataItemsFromArray:option.commonMetadata withKey:@"title" keySpace:@"comn"];
-        if (metaDatas.count > 0) {
-            NSString *title = ((AVMetadataItem*)[metaDatas objectAtIndex:0]).stringValue;
-            if ([name compare:title] == NSOrderedSame && audioTrackIndex == index ){
-                [[_player currentItem] selectMediaOption:option inMediaSelectionGroup: audioSelectionGroup];
-            }
-        }
-
-    }
-
+  }
 }
 
 - (void)setMixWithOthers:(bool)mixWithOthers {
   if (mixWithOthers) {
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
-                                     withOptions:AVAudioSessionCategoryOptionMixWithOthers
-                                           error:nil];
+    [[AVAudioSession sharedInstance]
+        setCategory:AVAudioSessionCategoryPlayback
+        withOptions:AVAudioSessionCategoryOptionMixWithOthers
+              error:nil];
   } else {
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:nil];
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
+                                           error:nil];
   }
 }
 
-
 #endif
 
-- (FlutterError* _Nullable)onCancelWithArguments:(id _Nullable)arguments {
-    _eventSink = nil;
-    return nil;
+- (FlutterError *_Nullable)onCancelWithArguments:(id _Nullable)arguments {
+  _eventSink = nil;
+  return nil;
 }
 
-- (FlutterError* _Nullable)onListenWithArguments:(id _Nullable)arguments
-                                       eventSink:(nonnull FlutterEventSink)events {
-    _eventSink = events;
-    // TODO(@recastrodiaz): remove the line below when the race condition is resolved:
-    // https://github.com/flutter/flutter/issues/21483
-    // This line ensures the 'initialized' event is sent when the event
-    // 'AVPlayerItemStatusReadyToPlay' fires before _eventSink is set (this function
-    // onListenWithArguments is called)
-    [self onReadyToPlay];
-    return nil;
+- (FlutterError *_Nullable)onListenWithArguments:(id _Nullable)arguments
+                                       eventSink:
+                                           (nonnull FlutterEventSink)events {
+  _eventSink = events;
+  // TODO(@recastrodiaz): remove the line below when the race condition is
+  // resolved: https://github.com/flutter/flutter/issues/21483 This line ensures
+  // the 'initialized' event is sent when the event
+  // 'AVPlayerItemStatusReadyToPlay' fires before _eventSink is set (this
+  // function onListenWithArguments is called)
+  [self onReadyToPlay];
+  return nil;
 }
 
 /// This method allows you to dispose without touching the event channel.  This
 /// is useful for the case where the Engine is in the process of deconstruction
 /// so the channel is going to die or is already dead.
 - (void)disposeSansEventChannel {
-    @try{
-        [self clear];
-    }
-    @catch(NSException *exception) {
-        NSLog(exception.debugDescription);
-    }
+  @try {
+    [self clear];
+  } @catch (NSException *exception) {
+    NSLog(exception.debugDescription);
+  }
 }
 
 - (void)dispose {
-    [self pause];
-    [self disposeSansEventChannel];
-    [_eventChannel setStreamHandler:nil];
-    [self disablePictureInPicture];
-    [self setPictureInPicture:false];
-    _disposed = true;
+  [self pause];
+  [self disposeSansEventChannel];
+  [_eventChannel setStreamHandler:nil];
+  [self disablePictureInPicture];
+  [self setPictureInPicture:false];
+  _disposed = true;
 }
 
 @end
