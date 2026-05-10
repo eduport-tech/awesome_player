@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs, sort_constructors_first
 import 'dart:async';
+import 'dart:developer';
 import 'dart:io';
 
 import 'package:awesome_video_player/awesome_video_player.dart';
@@ -155,7 +156,7 @@ class _CustomPlayerControlsState extends State<AwsomePlayerControls>
     }
   }
 
-  void _watchAsStreamedLive()async {
+  void _watchAsStreamedLive() async {
     setState(() {
       _liveStreamEnded = false;
     });
@@ -305,7 +306,6 @@ class _CustomPlayerControlsState extends State<AwsomePlayerControls>
     final size = MediaQuery.of(context).size;
     final bool hasError = _latestValue?.hasError == true;
     final String errorMessage = _latestValue?.errorDescription ?? 'Error';
-
     final bool isFullscreen = widget.betterPlayerController.isFullScreen;
 
     if (hasError) {
@@ -607,8 +607,8 @@ class _CustomPlayerControlsState extends State<AwsomePlayerControls>
                                           ? 30
                                           : 0),
                                   alignment: Alignment.bottomCenter,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 2),
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 2),
                                   child: HotStarProgressBar(
                                     widget.betterPlayerController
                                         .videoPlayerController,
@@ -695,8 +695,8 @@ class _CustomPlayerControlsState extends State<AwsomePlayerControls>
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
-                              border: Border.all(
-                                  color: Colors.white24, width: 1.5),
+                              border:
+                                  Border.all(color: Colors.white24, width: 1.5),
                               color: Colors.white10,
                             ),
                             child: const Icon(
@@ -726,8 +726,7 @@ class _CustomPlayerControlsState extends State<AwsomePlayerControls>
                           const SizedBox(height: 28),
                           ElevatedButton.icon(
                             onPressed: _watchAsStreamedLive,
-                            icon:
-                                const Icon(Icons.replay_rounded, size: 18),
+                            icon: const Icon(Icons.replay_rounded, size: 18),
                             label: const Text(
                               'Watch as Streamed Live',
                               style: TextStyle(
@@ -869,6 +868,7 @@ class _VideoProgressBarState extends State<HotStarProgressBar> {
     return false;
   }
 
+  final Debouncer debouncer = Debouncer(delay: 200);
   @override
   void initState() {
     super.initState();
@@ -919,26 +919,27 @@ class _VideoProgressBarState extends State<HotStarProgressBar> {
             widget.onDragStart!();
           }
         },
-        onHorizontalDragUpdate: (DragUpdateDetails details) {
+        onHorizontalDragUpdate: (DragUpdateDetails details) async {
           if (!controller!.value.initialized || !enableProgressBarDrag) {
             return;
           }
 
-          seekToRelativePosition(details.globalPosition);
+          await seekToRelativePosition(details.globalPosition);
 
           if (widget.onDragUpdate != null) {
             widget.onDragUpdate!();
           }
         },
-        onHorizontalDragEnd: (DragEndDetails details) {
+        onHorizontalDragEnd: (DragEndDetails details) async {
           if (!enableProgressBarDrag) {
             return;
           }
 
-          // Execute any pending seek operation immediately
-          _cancelSeekDebounceTimer();
           if (lastSeek != null) {
-            betterPlayerController!.seekTo(lastSeek!);
+            log("Seeking2");
+            debouncer.run(() async {
+              await betterPlayerController!.seekTo(lastSeek!);
+            });
           }
 
           if (_controllerWasPlaying) {
@@ -950,17 +951,18 @@ class _VideoProgressBarState extends State<HotStarProgressBar> {
             widget.onDragEnd!();
           }
         },
-        onTapDown: (TapDownDetails details) {
-          if (!controller!.value.initialized ||
-              !enableProgressBarDrag ||
-              Platform.isIOS) {
+        onTapDown: (TapDownDetails details) async {
+          if (!controller!.value.initialized || !enableProgressBarDrag) {
             return;
           }
 
           final position = calculatePosition(details.globalPosition);
           if (position != null) {
             lastSeek = position;
-            betterPlayerController!.seekTo(position);
+            log("Seeking3");
+            debouncer.run(() async {
+              await betterPlayerController!.seekTo(position);
+            });
           }
 
           _setupUpdateBlockTimer();
@@ -1022,7 +1024,7 @@ class _VideoProgressBarState extends State<HotStarProgressBar> {
     return null;
   }
 
-  void seekToRelativePosition(Offset globalPosition) {
+  Future<void> seekToRelativePosition(Offset globalPosition) async {
     final position = calculatePosition(globalPosition);
     if (position == null) return;
 
@@ -1031,11 +1033,13 @@ class _VideoProgressBarState extends State<HotStarProgressBar> {
     });
 
     _cancelSeekDebounceTimer();
-    _seekDebounceTimer = Timer(const Duration(milliseconds: 30), () {
+    debouncer.run(()async {
       if (mounted) {
-        betterPlayerController!.seekTo(position);
+        log("Seeking");
+        await betterPlayerController!.seekTo(position);
       }
     });
+
   }
 
   void onFinishedLastSeek() {
@@ -1369,8 +1373,7 @@ class _VideoSettingsBottomSheetState extends State<VideoSettingsBottomSheet>
       height: isFullScreen ? size.height : 430,
       width: isFullScreen ? size.width : null,
       decoration: BoxDecoration(
-        color:
-            const Color(0xFF1A1F38).withOpacity(isFullScreen ? 0.8 : 1),
+        color: const Color(0xFF1A1F38).withOpacity(isFullScreen ? 0.8 : 1),
         borderRadius: const BorderRadius.only(
           topLeft: Radius.circular(12),
           topRight: Radius.circular(12),
@@ -1730,5 +1733,18 @@ class StretchingScrollWidget extends StatelessWidget {
         child: child,
       ),
     );
+  }
+}
+
+class Debouncer {
+  Timer? _timer;
+  final int delay;
+  Debouncer({
+    required this.delay,
+  });
+
+  run(Function() action) {
+    _timer?.cancel();
+    _timer = Timer(Duration(milliseconds: delay), action);
   }
 }
