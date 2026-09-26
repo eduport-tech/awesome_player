@@ -224,7 +224,9 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
             duration: event.duration,
             size: event.size,
           );
-          _initializingCompleter.complete(null);
+          if (!_initializingCompleter.isCompleted) {
+            _initializingCompleter.complete(null);
+          }
           _applyPlayPause();
           break;
         case VideoEventType.completed:
@@ -421,26 +423,33 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     );
 
     if (!_creatingCompleter.isCompleted) await _creatingCompleter.future;
+    if (_isDisposed) {
+      return;
+    }
 
     _initializingCompleter = Completer<void>();
 
     await VideoPlayerPlatform.instance
         .setDataSource(_textureId, dataSourceDescription);
+    if (_isDisposed) {
+      return;
+    }
     return _initializingCompleter.future;
   }
 
   @override
   Future<void> dispose() async {
-    await _creatingCompleter.future;
-    if (!_isDisposed) {
-      _isDisposed = true;
-      value = VideoPlayerValue.uninitialized();
-      _timer?.cancel();
-      await _eventSubscription?.cancel();
-      await _videoPlayerPlatform.dispose(_textureId);
-      videoEventStreamController.close();
+    if (_isDisposed) {
+      return;
     }
+    ///Set before any await, so pending async work sees it and stops.
     _isDisposed = true;
+    _timer?.cancel();
+    await _creatingCompleter.future;
+    value = VideoPlayerValue.uninitialized();
+    await _eventSubscription?.cancel();
+    await _videoPlayerPlatform.dispose(_textureId);
+    videoEventStreamController.close();
     super.dispose();
   }
 
@@ -481,6 +490,9 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     _timer?.cancel();
     if (value.isPlaying) {
       await _videoPlayerPlatform.play(_textureId);
+      if (_isDisposed) {
+        return;
+      }
       _timer = Timer.periodic(
         const Duration(milliseconds: 300),
         (Timer timer) async {
@@ -566,6 +578,9 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     _seekPosition = positionToSeek;
 
     await _videoPlayerPlatform.seekTo(_textureId, positionToSeek);
+    if (_isDisposed) {
+      return;
+    }
     _updatePosition(position);
 
     if (isPlaying) {
@@ -611,17 +626,26 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   /// [height] specifies height of the selected track
   /// [bitrate] specifies bitrate of the selected track
   Future<void> setTrackParameters(int? width, int? height, int? bitrate) async {
+    if (_isDisposed) {
+      return;
+    }
     await _videoPlayerPlatform.setTrackParameters(
         _textureId, width, height, bitrate);
   }
 
   Future<void> enablePictureInPicture(
       {double? top, double? left, double? width, double? height}) async {
+    if (_isDisposed) {
+      return;
+    }
     await _videoPlayerPlatform.enablePictureInPicture(
         textureId, top, left, width, height);
   }
 
   Future<void> disablePictureInPicture() async {
+    if (_isDisposed) {
+      return;
+    }
     await _videoPlayerPlatform.disablePictureInPicture(textureId);
   }
 
@@ -633,7 +657,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   }
 
   Future<bool?> isPictureInPictureSupported() async {
-    if (_textureId == null) {
+    if (_textureId == null || _isDisposed) {
       return false;
     }
     return _videoPlayerPlatform.isPictureInPictureEnabled(_textureId);
@@ -644,10 +668,16 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   }
 
   void setAudioTrack(String? name, int? index) {
+    if (_isDisposed) {
+      return;
+    }
     _videoPlayerPlatform.setAudioTrack(_textureId, name, index);
   }
 
   void setMixWithOthers(bool mixWithOthers) {
+    if (_isDisposed) {
+      return;
+    }
     _videoPlayerPlatform.setMixWithOthers(_textureId, mixWithOthers);
   }
 
