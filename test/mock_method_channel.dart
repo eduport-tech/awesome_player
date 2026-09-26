@@ -5,7 +5,11 @@ class MockMethodChannel {
   final MethodChannel channel = const MethodChannel("better_player_channel");
   final List<MethodChannel> eventsChannels = [];
 
+  ///All method calls received, in order.
+  final List<MethodCall> methodCalls = [];
+
   Future<Object?>? handle(MethodCall methodCall) async {
+    methodCalls.add(methodCall);
     if (methodCall.method == "create") {
       final int id = getNextId();
       _createEventChannel(id);
