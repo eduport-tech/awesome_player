@@ -296,7 +296,11 @@ bool _remoteCommandsInitialized = false;
         int64_t textureId = ((NSNumber*)argsMap[@"textureId"]).unsignedIntegerValue;
         BetterPlayer* player = _players[@(textureId)];
         if ([@"setDataSource" isEqualToString:call.method]) {
-            [player clear];
+            @try {
+                [player clear];
+            } @catch (NSException* exception) {
+                NSLog(@"BetterPlayer setDataSource: clear failed: %@", exception.reason);
+            }
             // This call will clear cached frame because we will return transparent frame
 
             NSDictionary* dataSource = argsMap[@"dataSource"];
@@ -345,7 +349,11 @@ bool _remoteCommandsInitialized = false;
             }
             result(nil);
         } else if ([@"dispose" isEqualToString:call.method]) {
-            [player clear];
+            @try {
+                [player clear];
+            } @catch (NSException* exception) {
+                NSLog(@"BetterPlayer dispose: clear failed: %@", exception.reason);
+            }
             [self disposeNotificationData:player];
             [self setRemoteCommandsNotificationNotActive];
             [_players removeObjectForKey:@(textureId)];

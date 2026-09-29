@@ -1,9 +1,60 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:awesome_video_player/awesome_video_player.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'better_player_mock_controller.dart';
 import 'better_player_test_utils.dart';
+import 'mock_http_client.dart';
 import 'mock_method_channel.dart';
 import 'mock_video_player_controller.dart';
+
+const String _liveStreamUrl = "http://example.com/live/playlist.m3u8";
+
+const String _vodMasterPlaylist = """
+#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="audio_en.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Hindi",LANGUAGE="hi",URI="audio_hi.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=842x480,AUDIO="audio"
+video_480.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,AUDIO="audio"
+video_720.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="audio"
+video_1080.m3u8
+""";
+
+const String _vodMediaPlaylist = """
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:6
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXTINF:6.0,
+segment0.ts
+#EXT-X-ENDLIST
+""";
+
+const String _liveMasterPlaylist = """
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+live_360.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=960x540
+live_540.m3u8
+""";
+
+const String _liveMediaPlaylist = """
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:100
+#EXTINF:6.0,
+segment100.ts
+#EXTINF:6.0,
+segment101.ts
+""";
+
+///BetterPlayerAsmsUtils keeps its HttpClient in a static field, so every test
+///must hand out this same instance.
+final MockHttpClient _mockHttpClient = MockHttpClient();
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -431,6 +482,170 @@ void main() {
         await Future.delayed(const Duration(milliseconds: 3000), () {});
         expect(eventCount, 3);
       });
+
+      test("dispose during HLS playlist fetch does not throw", () async {
+        _setupHlsResponses();
+        final List<Object> errors = await _runWithMockHttp(() async {
+          final BetterPlayerController betterPlayerController =
+              BetterPlayerController(const BetterPlayerConfiguration());
+          betterPlayerController.setupDataSource(
+              _hlsDataSource(BetterPlayerTestUtils.elephantDreamStreamUrl));
+          betterPlayerController.dispose();
+          await Future.delayed(const Duration(milliseconds: 300), () {});
+        });
+        expect(_mockHttpClient.requestedUrls,
+            contains(BetterPlayerTestUtils.elephantDreamStreamUrl));
+        expect(errors, isEmpty);
+      });
+
+      test("dispose during HLS live check does not throw", () async {
+        _setupHlsResponses();
+        final String variantUrl = _resolveUrl(
+            BetterPlayerTestUtils.elephantDreamStreamUrl, "video_480.m3u8");
+        _mockHttpClient.delays[variantUrl] = const Duration(milliseconds: 200);
+        final List<Object> errors = await _runWithMockHttp(() async {
+          final BetterPlayerController betterPlayerController =
+              BetterPlayerController(const BetterPlayerConfiguration());
+          betterPlayerController.setupDataSource(
+              _hlsDataSource(BetterPlayerTestUtils.elephantDreamStreamUrl));
+          await _waitUntil(
+              () => _mockHttpClient.requestedUrls.contains(variantUrl));
+          betterPlayerController.dispose();
+          await Future.delayed(const Duration(milliseconds: 400), () {});
+        });
+        expect(_mockHttpClient.requestedUrls, contains(variantUrl));
+        expect(errors, isEmpty);
+      });
+
+      test("setupDataSource ignores the previous data source HLS setup",
+          () async {
+        _setupHlsResponses();
+        _mockHttpClient.delays[_liveStreamUrl] =
+            const Duration(milliseconds: 150);
+        final BetterPlayerMockController betterPlayerMockController =
+            BetterPlayerTestUtils.setupBetterPlayerMockController(
+          controller: MockVideoPlayerController(),
+        );
+        bool firstSetupCompleted = false;
+        final List<Object> errors = await _runWithMockHttp(() async {
+          betterPlayerMockController
+              .setupDataSource(_hlsDataSource(_liveStreamUrl))
+              .then((dynamic value) => firstSetupCompleted = true);
+          await betterPlayerMockController.setupDataSource(
+              _hlsDataSource(BetterPlayerTestUtils.elephantDreamStreamUrl));
+          await Future.delayed(const Duration(milliseconds: 400), () {});
+        });
+        expect(errors, isEmpty);
+        expect(firstSetupCompleted, true);
+        expect(
+            betterPlayerMockController.betterPlayerSubtitlesSourceList
+                .where((source) =>
+                    source.type == BetterPlayerSubtitlesSourceType.none)
+                .length,
+            1);
+        expect(betterPlayerMockController.betterPlayerDataSource!.url,
+            BetterPlayerTestUtils.elephantDreamStreamUrl);
+        expect(
+            betterPlayerMockController.betterPlayerAsmsTracks
+                .map((track) => track.height)
+                .toList(),
+            [0, 480, 720, 1080]);
+        expect(betterPlayerMockController.isLiveStream(), false);
+        expect(
+            betterPlayerMockController.betterPlayerAsmsAudioTrack?.language,
+            "en");
+      });
+
+      test("dispose while autoplay starts stops further player calls",
+          () async {
+        _setupHlsResponses();
+        _mockHttpClient.defaultDelay = const Duration(milliseconds: 100);
+        int? textureId;
+        int callsBeforeDispose = -1;
+        final List<Object> errors = await _runWithMockHttp(() async {
+          final BetterPlayerController betterPlayerController =
+              BetterPlayerController(const BetterPlayerConfiguration(
+                  autoPlay: true, startAt: Duration(seconds: 1)));
+          betterPlayerController.setupDataSource(
+              _hlsDataSource(BetterPlayerTestUtils.elephantDreamStreamUrl));
+          final videoPlayerController =
+              betterPlayerController.videoPlayerController!;
+          videoPlayerController.addListener(() {
+            if (callsBeforeDispose == -1 &&
+                videoPlayerController.value.isPlaying) {
+              textureId = videoPlayerController.textureId;
+              callsBeforeDispose = mockMethodChannel.methodCalls.length;
+              betterPlayerController.dispose();
+            }
+          });
+          await Future.delayed(const Duration(milliseconds: 400), () {});
+        });
+        expect(callsBeforeDispose, isNot(-1));
+        final List<String> callsAfterDispose = mockMethodChannel.methodCalls
+            .skip(callsBeforeDispose)
+            .where((call) =>
+                (call.arguments as Map?)?["textureId"] == textureId)
+            .map((call) => call.method)
+            .toList();
+        expect(callsAfterDispose, isNot(contains("setTrackParameters")));
+        expect(callsAfterDispose, isNot(contains("setAudioTrack")));
+        expect(callsAfterDispose, isNot(contains("seekTo")));
+        expect(errors, isEmpty);
+      });
     },
   );
+}
+
+///Network data source with ASMS tracks, subtitles and audio tracks enabled
+///(BetterPlayerDataSource.network leaves these flags null).
+BetterPlayerDataSource _hlsDataSource(String url) =>
+    BetterPlayerDataSource(BetterPlayerDataSourceType.network, url);
+
+String _resolveUrl(String baseUrl, String path) =>
+    Uri.parse(baseUrl).resolve(path).toString();
+
+///Serve a VOD master playlist (with audio tracks) under elephantDreamStreamUrl
+///and a live one under [_liveStreamUrl].
+void _setupHlsResponses() {
+  _mockHttpClient.reset();
+  const String vodUrl = BetterPlayerTestUtils.elephantDreamStreamUrl;
+  _mockHttpClient.responses[vodUrl] = _vodMasterPlaylist;
+  for (final String path in [
+    "video_480.m3u8",
+    "video_720.m3u8",
+    "video_1080.m3u8"
+  ]) {
+    _mockHttpClient.responses[_resolveUrl(vodUrl, path)] = _vodMediaPlaylist;
+  }
+  _mockHttpClient.responses[_liveStreamUrl] = _liveMasterPlaylist;
+  for (final String path in ["live_360.m3u8", "live_540.m3u8"]) {
+    _mockHttpClient.responses[_resolveUrl(_liveStreamUrl, path)] =
+        _liveMediaPlaylist;
+  }
+}
+
+///Run [body] with [_mockHttpClient] as HttpClient and return every uncaught
+///error thrown in the meantime (including the ones from unawaited futures).
+Future<List<Object>> _runWithMockHttp(Future<void> Function() body) {
+  final List<Object> errors = [];
+  final Completer<List<Object>> completer = Completer<List<Object>>();
+  HttpOverrides.runZoned(
+    () => runZonedGuarded(() async {
+      try {
+        await body();
+      } catch (error) {
+        errors.add(error);
+      }
+      completer.complete(errors);
+    }, (Object error, StackTrace stackTrace) => errors.add(error)),
+    createHttpClient: (SecurityContext? context) => _mockHttpClient,
+  );
+  return completer.future;
+}
+
+///Wait until [condition] is met (max 2 seconds).
+Future<void> _waitUntil(bool Function() condition) async {
+  for (int attempt = 0; attempt < 200 && !condition(); attempt++) {
+    await Future.delayed(const Duration(milliseconds: 10), () {});
+  }
 }

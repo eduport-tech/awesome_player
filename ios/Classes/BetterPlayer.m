@@ -32,6 +32,15 @@ AVPictureInPictureController *_pipController;
 @property(nonatomic) int lastOverriddenDuration;
 @property(nonatomic, copy) NSString *lastVideoExtension;
 @property(nonatomic) BOOL isSeeking;
+// The item our KVO observers and notifications are registered on.
+@property(nonatomic, strong) AVPlayerItem *observedItem;
+@property(nonatomic) BOOL rateObserverAdded;
+// Bumped by setDataSource/retry/clear/dispose to drop stale async loads.
+@property(nonatomic) NSUInteger loadGeneration;
+// The asset being loaded asynchronously, if any.
+@property(nonatomic, strong) AVAsset *pendingAsset;
+@property(nonatomic) double lastPeakBitRate;
+@property(nonatomic) CGSize lastMaxResolution;
 
 @end
 
@@ -40,6 +49,27 @@ AVPictureInPictureController *_pipController;
 - (void)cancelRetry {
   [self.retryTimer invalidate];
   self.retryTimer = nil;
+}
+
+- (void)cancelStalledCheck {
+  [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                           selector:@selector(startStalledCheck)
+                                             object:nil];
+  _isStalledCheckStarted = false;
+  _stalledCount = 0;
+}
+
+- (void)invalidatePendingLoad {
+  self.loadGeneration++;
+  [self.pendingAsset cancelLoading];
+  self.pendingAsset = nil;
+}
+
+- (void)applyTrackParametersToItem:(AVPlayerItem *)item {
+  item.preferredPeakBitRate = self.lastPeakBitRate;
+  if (@available(iOS 11.0, *)) {
+    item.preferredMaximumResolution = self.lastMaxResolution;
+  }
 }
 
 - (void)buildPlayerItemWithURL:(NSURL *)url
@@ -89,9 +119,19 @@ AVPictureInPictureController *_pipController;
   }
 
   NSArray *keys = @[ @"playable", @"tracks", @"duration" ];
+  NSUInteger generation = self.loadGeneration;
+  self.pendingAsset = asset;
+  __weak BetterPlayer *weakSelf = self;
   [asset loadValuesAsynchronouslyForKeys:keys
                        completionHandler:^{
                          dispatch_async(dispatch_get_main_queue(), ^{
+                           BetterPlayer *strongSelf = weakSelf;
+                           // Drop loads that were superseded or cancelled, or
+                           // that finished after the player was disposed.
+                           if (strongSelf == nil || strongSelf->_disposed ||
+                               generation != strongSelf.loadGeneration)
+                             return;
+                           strongSelf.pendingAsset = nil;
                            AVPlayerItem *item =
                                [AVPlayerItem playerItemWithAsset:asset];
                            completionHandler(item);
@@ -105,15 +145,21 @@ AVPictureInPictureController *_pipController;
     return;
   }
 
-  bool wasPlaying = _isPlaying;
+  [self cancelStalledCheck];
+  [self invalidatePendingLoad];
   CMTime resumeTime = _player.currentTime;
   if ([self isLiveStreamItem:_player.currentItem]) {
     resumeTime = kCMTimeInvalid;
   }
+  // onReadyToPlay does not run again for the rebuilt item (_isInitialized
+  // stays true), so carry over the clip end it applied to the old item.
+  CMTime forwardPlaybackEndTime = _player.currentItem.forwardPlaybackEndTime;
+  NSString *key = _key;
 
   NSLog(@"BetterPlayer iOS: retrying playback %d/%d", _failedCount,
         maxRetryCount);
   [self removeObservers];
+  __weak BetterPlayer *weakSelf = self;
   [self buildPlayerItemWithURL:self.lastUrl
             withCertificateUrl:self.lastCertificateUrl
                 withLicenseUrl:self.lastLicenseUrl
@@ -123,21 +169,34 @@ AVPictureInPictureController *_pipController;
                   cacheManager:self.lastCacheManager
                 videoExtension:self.lastVideoExtension
              completionHandler:^(AVPlayerItem *item) {
-               if (self->_disposed)
+               BetterPlayer *strongSelf = weakSelf;
+               if (strongSelf == nil || strongSelf->_disposed)
                  return;
-               if (@available(iOS 10.0, *) && self.lastOverriddenDuration > 0) {
-                 self->_overriddenDuration = self.lastOverriddenDuration;
+               if (@available(iOS 10.0, *) &&
+                   strongSelf.lastOverriddenDuration > 0) {
+                 strongSelf->_overriddenDuration =
+                     strongSelf.lastOverriddenDuration;
                }
-               [self setDataSourcePlayerItem:item withKey:self->_key];
+               // setDataSourcePlayerItem resets the rate to 1; keep the
+               // current speed, including a setSpeed made during the rebuild.
+               float rate = strongSelf->_playerRate;
+               [strongSelf setDataSourcePlayerItem:item withKey:key];
+               if (item == nil)
+                 return;
 
+               strongSelf->_playerRate = rate;
+               [strongSelf applyTrackParametersToItem:item];
+               if (!CMTIME_IS_INVALID(forwardPlaybackEndTime)) {
+                 item.forwardPlaybackEndTime = forwardPlaybackEndTime;
+               }
                if (!CMTIME_IS_INVALID(resumeTime)) {
-                 [self->_player seekToTime:resumeTime
-                           toleranceBefore:kCMTimeZero
-                            toleranceAfter:kCMTimeZero];
+                 [strongSelf->_player seekToTime:resumeTime
+                                 toleranceBefore:kCMTimeZero
+                                  toleranceAfter:kCMTimeZero];
                }
-               if (wasPlaying) {
-                 [self play];
-               }
+               // Resume with the current play intent, which may have changed
+               // while the item was rebuilt.
+               [strongSelf updatePlayingState];
              }];
 }
 
@@ -146,7 +205,8 @@ AVPictureInPictureController *_pipController;
     return NO;
   }
 
-  if (self.retryTimer != nil) {
+  // A retry is already scheduled, or an item is still being (re)loaded.
+  if (self.retryTimer != nil || self.pendingAsset != nil) {
     return YES;
   }
 
@@ -159,12 +219,17 @@ AVPictureInPictureController *_pipController;
   NSLog(@"BetterPlayer iOS: %@ - retry %d/%d in %.0fs", message, _failedCount,
         maxRetryCount, delay);
   [self cancelRetry];
+  __weak BetterPlayer *weakSelf = self;
   self.retryTimer =
       [NSTimer scheduledTimerWithTimeInterval:delay
-                                       target:self
-                                     selector:@selector(retryCurrentDataSource)
-                                     userInfo:nil
-                                      repeats:NO];
+                                      repeats:NO
+                                        block:^(NSTimer *timer) {
+                                          BetterPlayer *strongSelf = weakSelf;
+                                          if (strongSelf == nil ||
+                                              strongSelf.retryTimer != timer)
+                                            return;
+                                          [strongSelf retryCurrentDataSource];
+                                        }];
   return YES;
 }
 
@@ -228,8 +293,13 @@ AVPictureInPictureController *_pipController;
 }
 
 - (void)addObservers:(AVPlayerItem *)item {
-  if (!self._observersAdded) {
-    [_player addObserver:self forKeyPath:@"rate" options:0 context:nil];
+  if (item != nil && self.observedItem != item) {
+    // Detach from whatever item was observed before.
+    [self removeObservers];
+    if (!self.rateObserverAdded) {
+      [_player addObserver:self forKeyPath:@"rate" options:0 context:nil];
+      self.rateObserverAdded = YES;
+    }
     [item addObserver:self
            forKeyPath:@"loadedTimeRanges"
               options:0
@@ -269,60 +339,70 @@ AVPictureInPictureController *_pipController;
            selector:@selector(itemNewAccessLogEntry:)
                name:AVPlayerItemNewAccessLogEntryNotification
              object:item];
+    self.observedItem = item;
     self._observersAdded = true;
   }
 }
 
 - (void)clear {
   [self cancelRetry];
-  [NSObject cancelPreviousPerformRequestsWithTarget:self
-                                           selector:@selector(startStalledCheck)
-                                             object:nil];
+  [self cancelStalledCheck];
+  [self invalidatePendingLoad];
   _isInitialized = false;
   _isPlaying = false;
-  _disposed = false;
   _failedCount = 0;
   _key = nil;
-  if (_player.currentItem == nil) {
-    return;
-  }
-
-  if (_player.currentItem == nil) {
-    return;
-  }
-
+  self.isSeeking = NO;
   [self removeObservers];
   AVAsset *asset = [_player.currentItem asset];
   [asset cancelLoading];
 }
 
 - (void)removeObservers {
-  if (self._observersAdded) {
+  if (self.rateObserverAdded) {
+    self.rateObserverAdded = NO;
     [_player removeObserver:self forKeyPath:@"rate" context:nil];
-    [[_player currentItem] removeObserver:self
-                               forKeyPath:@"status"
-                                  context:statusContext];
-    [[_player currentItem] removeObserver:self
-                               forKeyPath:@"presentationSize"
-                                  context:presentationSizeContext];
-    [[_player currentItem] removeObserver:self
-                               forKeyPath:@"loadedTimeRanges"
-                                  context:timeRangeContext];
-    [[_player currentItem] removeObserver:self
-                               forKeyPath:@"duration"
-                                  context:nil];
-    [[_player currentItem] removeObserver:self
-                               forKeyPath:@"playbackLikelyToKeepUp"
-                                  context:playbackLikelyToKeepUpContext];
-    [[_player currentItem] removeObserver:self
-                               forKeyPath:@"playbackBufferEmpty"
-                                  context:playbackBufferEmptyContext];
-    [[_player currentItem] removeObserver:self
-                               forKeyPath:@"playbackBufferFull"
-                                  context:playbackBufferFullContext];
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-    self._observersAdded = false;
   }
+  // Clear the bookkeeping first, so a re-entrant call never removes twice.
+  AVPlayerItem *item = self.observedItem;
+  self.observedItem = nil;
+  self._observersAdded = false;
+  if (item == nil) {
+    return;
+  }
+  // Remove from the item the observers were added to, which is not
+  // necessarily _player.currentItem.
+  [item removeObserver:self forKeyPath:@"status" context:statusContext];
+  [item removeObserver:self
+            forKeyPath:@"presentationSize"
+               context:presentationSizeContext];
+  [item removeObserver:self
+            forKeyPath:@"loadedTimeRanges"
+               context:timeRangeContext];
+  [item removeObserver:self forKeyPath:@"duration" context:nil];
+  [item removeObserver:self
+            forKeyPath:@"playbackLikelyToKeepUp"
+               context:playbackLikelyToKeepUpContext];
+  [item removeObserver:self
+            forKeyPath:@"playbackBufferEmpty"
+               context:playbackBufferEmptyContext];
+  [item removeObserver:self
+            forKeyPath:@"playbackBufferFull"
+               context:playbackBufferFullContext];
+  [[NSNotificationCenter defaultCenter]
+      removeObserver:self
+                name:AVPlayerItemDidPlayToEndTimeNotification
+              object:item];
+  [[NSNotificationCenter defaultCenter]
+      removeObserver:self
+                name:AVPlayerItemNewAccessLogEntryNotification
+              object:item];
+}
+
+- (void)dealloc {
+  // Last-resort safety net: the AVPlayer and its item can outlive us.
+  [_retryTimer invalidate];
+  [self removeObservers];
 }
 
 - (void)itemDidPlayToEndTime:(NSNotification *)notification {
@@ -457,7 +537,10 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   }
 
   [self cancelRetry];
+  [self invalidatePendingLoad];
   _failedCount = 0;
+  self.lastPeakBitRate = 0;
+  self.lastMaxResolution = CGSizeZero;
   self.lastUrl = url;
   self.lastCertificateUrl =
       certificateUrl != [NSNull null] ? certificateUrl : nil;
@@ -470,6 +553,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   self.lastVideoExtension =
       videoExtension != [NSNull null] ? videoExtension : nil;
 
+  __weak BetterPlayer *weakSelf = self;
   [self buildPlayerItemWithURL:url
             withCertificateUrl:certificateUrl
                 withLicenseUrl:licenseUrl
@@ -479,20 +563,34 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
                   cacheManager:cacheManager
                 videoExtension:videoExtension
              completionHandler:^(AVPlayerItem *item) {
-               if (self->_disposed)
+               BetterPlayer *strongSelf = weakSelf;
+               if (strongSelf == nil || strongSelf->_disposed)
                  return;
                if (@available(iOS 10.0, *) && overriddenDuration > 0) {
-                 self->_overriddenDuration = overriddenDuration;
+                 strongSelf->_overriddenDuration = overriddenDuration;
                }
-               [self setDataSourcePlayerItem:item withKey:key];
+               [strongSelf setDataSourcePlayerItem:item withKey:key];
              }];
 }
 
 - (void)setDataSourcePlayerItem:(AVPlayerItem *)item withKey:(NSString *)key {
+  // Detach from the previous item BEFORE replacing it, so the observers can
+  // never be left on an item that is no longer current.
+  [self cancelStalledCheck];
+  [self removeObservers];
+  // Pending seeks are cancelled by the item replacement.
+  self.isSeeking = NO;
   _key = key;
-  _stalledCount = 0;
-  _isStalledCheckStarted = false;
   _playerRate = 1;
+  if (item == nil) {
+    if (_eventSink != nil) {
+      _eventSink([FlutterError
+          errorWithCode:@"VideoError"
+                message:@"Failed to load video: nil player item"
+                details:nil]);
+    }
+    return;
+  }
   [_player replaceCurrentItemWithPlayerItem:item];
 
   AVAsset *asset = [item asset];
@@ -543,6 +641,10 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 }
 
 - (void)startStalledCheck {
+  if (_disposed || !_isPlaying || _player.currentItem == nil) {
+    _isStalledCheckStarted = false;
+    return;
+  }
   if (_player.currentItem.playbackLikelyToKeepUp ||
       [self availableDuration] -
               CMTimeGetSeconds(_player.currentItem.currentTime) >
@@ -588,6 +690,10 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
                       ofObject:(id)object
                         change:(NSDictionary *)change
                        context:(void *)context {
+  // Ignore late notifications from items we no longer observe.
+  if (object != _player && object != self.observedItem) {
+    return;
+  }
 
   if ([path isEqualToString:@"rate"]) {
     if (@available(iOS 10.0, *)) {
@@ -735,11 +841,15 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 }
 
 - (void)updatePlayingState {
-  if (!_isInitialized || !_key) {
+  if (_disposed || !_isInitialized || !_key) {
     return;
   }
-  if (!self._observersAdded) {
-    [self addObservers:[_player currentItem]];
+  // Re-attach after itemDidPlayToEndTime detached us, but never while an item
+  // is being (re)loaded: the current item is about to be replaced.
+  AVPlayerItem *currentItem = _player.currentItem;
+  if (currentItem != nil && self.pendingAsset == nil &&
+      self.observedItem != currentItem) {
+    [self addObservers:currentItem];
   }
 
   if (_isPlaying) {
@@ -827,6 +937,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 
 - (void)pause {
   _isPlaying = false;
+  [self cancelStalledCheck];
   [self updatePlayingState];
 }
 
@@ -1002,15 +1113,14 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 }
 
 - (void)setTrackParameters:(int)width:(int)height:(int)bitrate {
-  _player.currentItem.preferredPeakBitRate = bitrate;
-  if (@available(iOS 11.0, *)) {
-    if (width == 0 && height == 0) {
-      _player.currentItem.preferredMaximumResolution = CGSizeZero;
-    } else {
-      _player.currentItem.preferredMaximumResolution =
-          CGSizeMake(width, height);
-    }
+  // Remember the selection so a native retry can re-apply it to the new item.
+  self.lastPeakBitRate = bitrate;
+  if (width == 0 && height == 0) {
+    self.lastMaxResolution = CGSizeZero;
+  } else {
+    self.lastMaxResolution = CGSizeMake(width, height);
   }
+  [self applyTrackParametersToItem:_player.currentItem];
 }
 
 - (void)setPictureInPicture:(BOOL)pictureInPicture {
@@ -1195,16 +1305,22 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     [self clear];
   } @catch (NSException *exception) {
     NSLog(exception.debugDescription);
+    self.observedItem = nil;
+    self.rateObserverAdded = NO;
+    self._observersAdded = false;
   }
+  _disposed = true;
 }
 
 - (void)dispose {
-  [self pause];
+  // Set first, so pending timers and load completions bail out.
+  _disposed = true;
+  _isPlaying = false;
+  [_player pause];
   [self disposeSansEventChannel];
   [_eventChannel setStreamHandler:nil];
   [self disablePictureInPicture];
   [self setPictureInPicture:false];
-  _disposed = true;
 }
 
 @end
